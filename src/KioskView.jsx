@@ -66,11 +66,12 @@ function SlipRow({ label, value, icon, mono, accent }) {
   );
 }
 
-export default function KioskView({ dispatchLog, setDispatchLog }) {
+export default function KioskView({ dispatchLog, pendingRequests, setPendingRequests }) {
   const KIOSK = "T1";
   const [step, setStep]     = useState("home");
   const [dest, setDest]     = useState(null);
   const [record, setRecord] = useState(null);
+  const [myRequestId, setMyRequestId] = useState(null);
 
   // Search / pin-drop state
   const [query, setQuery]       = useState("");
@@ -83,6 +84,16 @@ export default function KioskView({ dispatchLog, setDispatchLog }) {
   const originTerm = getTerm(KIOSK);
   const dests = TERMINALS.filter(t => t.id !== KIOSK);
   const fare  = dest ? getFare(KIOSK, dest.id) : 0;
+
+  // Watch for a driver accepting our specific pending request
+  useEffect(() => {
+    if (step !== "waiting" || !myRequestId) return;
+    const accepted = dispatchLog.find(l => l.id === myRequestId);
+    if (accepted) {
+      setRecord(accepted);
+      setStep("success");
+    }
+  }, [dispatchLog, step, myRequestId]);
 
   // Free-form search via Nominatim (OSM), biased near Mary Cris Complex
   useEffect(() => {
@@ -118,18 +129,18 @@ export default function KioskView({ dispatchLog, setDispatchLog }) {
   };
 
   const handleConfirm = () => {
-    const r = {
-      id: genId(), origin: KIOSK, destination: dest.id,
-      driver: "Marlon Reyes", unit: "MCC-003", plate: "ABL-3456",
-      fare, ts: new Date().toISOString(), status: "dispatched",
+    const id = genId();
+    const req = {
+      id, origin: KIOSK, destination: dest.id,
+      fare, ts: new Date().toISOString(), status: "pending",
     };
-    setRecord(r);
-    setDispatchLog(p => [r, ...p]);
-    setStep("success");
+    setPendingRequests(p => [req, ...p]);
+    setMyRequestId(id);
+    setStep("waiting");
   };
 
   const reset = () => {
-    setStep("home"); setDest(null); setRecord(null);
+    setStep("home"); setDest(null); setRecord(null); setMyRequestId(null);
     setQuery(""); setResults([]); setPinMode(false); setDroppedPin(null); setSnap(null);
   };
   const flyTarget = dest || originTerm;
@@ -384,6 +395,43 @@ export default function KioskView({ dispatchLog, setDispatchLog }) {
               style={{ background:"transparent", border:"none", color:C.muted,
                 fontFamily:IN, fontSize:13.5, cursor:"pointer", width:"100%", padding:"8px 0" }}>
               ← Change destination
+            </button>
+          </div>
+        )}
+
+        {step === "waiting" && (
+          <div style={{ textAlign:"center", padding:"12px 0" }}>
+            <div style={{ position:"relative", width:64, height:64, margin:"0 auto 18px" }}>
+              <div style={{ position:"absolute", inset:0, borderRadius:"50%",
+                background:"rgba(28,124,84,0.15)", animation:"gv-pulse 1.6s ease-out infinite" }} />
+              <div style={{ position:"absolute", inset:0, borderRadius:"50%", background:C.greenLight,
+                display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <Truck size={26} color={C.green} />
+              </div>
+            </div>
+            <h2 style={{ fontFamily:GR, fontWeight:700, fontSize:"clamp(16px,4.5vw,19px)", color:C.text, margin:"0 0 4px" }}>
+              Looking for a nearby driver…
+            </h2>
+            <p style={{ fontFamily:IN, fontSize:12.5, color:C.muted, margin:"0 0 18px" }}>
+              We'll notify you the moment a TODA driver accepts
+            </p>
+
+            <div style={{ background:C.surface, borderRadius:14, padding:"14px 16px", border:`1px solid ${C.border}`, textAlign:"left" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10, fontFamily:GR, fontSize:13, marginBottom:6 }}>
+                <span style={{ fontWeight:600, color:C.text }}>{originTerm.short}</span>
+                <ArrowRight size={13} color={C.muted} />
+                <span style={{ fontWeight:600, color:C.navy }}>{dest?.short}</span>
+              </div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span style={{ fontFamily:IN, fontSize:11.5, color:C.muted }}>Official fare</span>
+                <span style={{ fontFamily:GR, fontWeight:700, fontSize:14, color:C.green }}>₱{fare}.00</span>
+              </div>
+            </div>
+
+            <button onClick={reset}
+              style={{ marginTop:16, background:"transparent", border:"none", color:C.muted,
+                fontFamily:IN, fontSize:13, cursor:"pointer", padding:"8px 0" }}>
+              Cancel request
             </button>
           </div>
         )}

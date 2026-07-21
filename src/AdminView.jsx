@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Truck, Plus } from "lucide-react";
-import { C, GR, IN, TERMINALS, INIT_DRIVERS, INIT_TRICYCLES, FARES, getTerm, fmtTime, Logo } from "./shared.jsx";
+import { Truck, Plus, Star } from "lucide-react";
+import { C, GR, IN, TERMINALS, INIT_DRIVERS, INIT_TRICYCLES, FARES, getTerm, fmtTime, getDocStatus, Logo } from "./shared.jsx";
 
 function Badge({ children, variant = "gray" }) {
   const map = {
@@ -25,6 +25,23 @@ function statusBadge(s) {
   return <Badge variant={v}>{label}</Badge>;
 }
 
+function DocBadge({ label, status }) {
+  const map = {
+    red:    { bg:"#FEE2E2", fg:"#991B1B" },
+    yellow: { bg:"#FEF3C7", fg:"#92400E" },
+    green:  { bg:"#D1FAE5", fg:"#065F46" },
+  };
+  const { bg, fg } = map[status.variant];
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:10.5, fontFamily:IN, marginBottom:2 }}>
+      <span style={{ color:C.muted, minWidth:52 }}>{label}</span>
+      <span style={{ background:bg, color:fg, borderRadius:8, padding:"1px 7px", fontWeight:700, fontFamily:GR, fontSize:10 }}>
+        {status.label}
+      </span>
+    </div>
+  );
+}
+
 function DriversTab() {
   return (
     <div style={{ background:C.white, borderRadius:12, border:`1px solid ${C.border}`, overflow:"hidden" }}>
@@ -39,7 +56,7 @@ function DriversTab() {
       <table className="responsive-table">
         <thead>
           <tr style={{ background:C.surface }}>
-            {["Driver","License No.","Contact","Assigned Unit","Status"].map(h => (
+            {["Driver","License No.","Contact","Assigned Unit","Rating","Documents","Status"].map(h => (
               <th key={h} style={{ padding:"10px 16px", textAlign:"left", fontSize:11,
                 fontFamily:GR, fontWeight:600, color:C.muted, textTransform:"uppercase" }}>{h}</th>
             ))}
@@ -60,6 +77,17 @@ function DriversTab() {
               <td data-label="License No." style={{ padding:"12px 16px", fontFamily:"monospace", fontSize:12, color:C.muted }}>{d.license}</td>
               <td data-label="Contact" style={{ padding:"12px 16px", fontFamily:IN, fontSize:12, color:C.text }}>{d.contact}</td>
               <td data-label="Unit" style={{ padding:"12px 16px", fontFamily:"monospace", fontSize:13, fontWeight:700, color:C.text }}>{d.unit}</td>
+              <td data-label="Rating" style={{ padding:"12px 16px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                  <Star size={13} color={C.yellow} fill={C.yellow} />
+                  <span style={{ fontFamily:GR, fontWeight:700, fontSize:13, color:C.text }}>{d.rating}</span>
+                  <span style={{ fontFamily:IN, fontSize:10.5, color:C.muted }}>({d.tripsCompleted})</span>
+                </div>
+              </td>
+              <td data-label="Documents" style={{ padding:"12px 16px" }}>
+                <DocBadge label="License" status={getDocStatus(d.licenseExpiry)} />
+                <DocBadge label="Franchise" status={getDocStatus(d.franchiseExpiry)} />
+              </td>
               <td data-label="Status" style={{ padding:"12px 16px" }}>{statusBadge(d.status)}</td>
             </tr>
           ))}
