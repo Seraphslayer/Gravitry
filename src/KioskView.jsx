@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
-import { MapPin, Shield, ChevronRight, CheckCircle, ArrowRight, User, Truck, Hash, Search, X, Crosshair } from "lucide-react";
+import { MapPin, Shield, ChevronRight, CheckCircle, ArrowRight, User, Truck, Hash, Search, X, Crosshair, Settings } from "lucide-react";
 import { C, GR, IN, TERMINALS, COMPLEX_CENTER, getTerm, getFare, genId, fmtTime, TrikeIcon, nearestTerminal } from "./shared.jsx";
 
 function makeDivIcon(color, pulse = false) {
@@ -80,6 +80,7 @@ export default function KioskView({ dispatchLog, pendingRequests, setPendingRequ
   const [pinMode, setPinMode]   = useState(false);
   const [droppedPin, setDroppedPin] = useState(null); // { lat, lng }
   const [snap, setSnap]         = useState(null);      // { terminal, distanceMeters }
+  const [showSettings, setShowSettings] = useState(false);
 
   const originTerm = getTerm(KIOSK);
   const dests = TERMINALS.filter(t => t.id !== KIOSK);
@@ -189,6 +190,14 @@ export default function KioskView({ dispatchLog, pendingRequests, setPendingRequ
             {originTerm.short}
           </span>
         </div>
+
+        <button onClick={() => setShowSettings(true)}
+          style={{ position:"absolute", top:"calc(60px + var(--safe-top))", right:12, zIndex:400,
+            width:38, height:38, borderRadius:"50%", background:"rgba(255,255,255,0.95)",
+            border:"none", display:"flex", alignItems:"center", justifyContent:"center",
+            boxShadow:"0 4px 16px rgba(0,0,0,0.2)", cursor:"pointer" }}>
+          <Settings size={17} color={C.navy} />
+        </button>
         {pinMode && (
           <div style={{ position:"absolute", bottom:12, left:12, right:12, zIndex:400,
             background:"rgba(11,45,72,0.95)", backdropFilter:"blur(6px)", borderRadius:14,
@@ -476,6 +485,46 @@ export default function KioskView({ dispatchLog, pendingRequests, setPendingRequ
           </div>
         )}
       </div>
+
+      {showSettings && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex",
+          alignItems:"flex-end", justifyContent:"center", zIndex:2000 }}
+          onClick={() => setShowSettings(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:"#fff", borderRadius:"20px 20px 0 0", width:"100%", maxWidth:480,
+              padding:"18px 20px calc(20px + var(--safe-bottom))" }}>
+            <div className="sheet-handle" />
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+              <h3 style={{ fontFamily:GR, fontWeight:700, fontSize:16, color:C.text, margin:0 }}>Kiosk Settings</h3>
+              <button onClick={() => setShowSettings(false)}
+                style={{ background:C.surface, border:"none", borderRadius:8, width:30, height:30,
+                  display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
+                <X size={15} color={C.muted} />
+              </button>
+            </div>
+
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              <div style={{ background:C.surface, borderRadius:12, padding:"12px 14px", display:"flex", justifyContent:"space-between" }}>
+                <span style={{ fontFamily:IN, fontSize:13, color:C.muted }}>Terminal</span>
+                <span style={{ fontFamily:GR, fontWeight:600, fontSize:13, color:C.text }}>{originTerm.name}</span>
+              </div>
+              <div style={{ background:C.surface, borderRadius:12, padding:"12px 14px", display:"flex", justifyContent:"space-between" }}>
+                <span style={{ fontFamily:IN, fontSize:13, color:C.muted }}>Connection</span>
+                <span style={{ fontFamily:GR, fontWeight:600, fontSize:13, color:C.green }}>● Online</span>
+              </div>
+              <div style={{ background:C.surface, borderRadius:12, padding:"12px 14px", display:"flex", justifyContent:"space-between" }}>
+                <span style={{ fontFamily:IN, fontSize:13, color:C.muted }}>App Version</span>
+                <span style={{ fontFamily:"monospace", fontSize:12.5, color:C.text }}>v0.3.0</span>
+              </div>
+            </div>
+
+            <p style={{ marginTop:16, fontSize:11.5, color:C.muted, fontFamily:IN, lineHeight:1.5 }}>
+              This kiosk is registered to {originTerm.name}. Contact your TODA administrator to change
+              terminal assignment or report an issue.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

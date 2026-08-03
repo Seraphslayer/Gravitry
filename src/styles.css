@@ -1,5 +1,5 @@
 /* ── Font import ─────────────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap");
 
 :root {
   --safe-top: env(safe-area-inset-top, 0px);
@@ -9,9 +9,12 @@
   --vh: 1vh;
 }
 
-* { -webkit-tap-highlight-color: transparent; }
+* {
+  -webkit-tap-highlight-color: transparent;
+}
 
-html, body {
+html,
+body {
   height: 100%;
   overflow: hidden;
 }
@@ -37,7 +40,9 @@ html, body {
   padding-right: max(12px, var(--safe-right));
   padding-top: var(--safe-top);
 }
-.nav-ribbon::-webkit-scrollbar { display: none; }
+.nav-ribbon::-webkit-scrollbar {
+  display: none;
+}
 
 /* ── Kiosk: Angkas-style layout ──────────────────────────────────────────── */
 .kiosk-shell {
@@ -56,8 +61,8 @@ html, body {
 .leaflet-container {
   width: 100%;
   height: 100%;
-  background: #0B2D48;
-  font-family: 'Inter', sans-serif;
+  background: #0b2d48;
+  font-family: "Inter", sans-serif;
 }
 
 /* Bottom sheet: slides up, resizes fluidly */
@@ -66,7 +71,7 @@ html, body {
   flex-shrink: 0;
   background: #fff;
   border-radius: 20px 20px 0 0;
-  box-shadow: 0 -8px 32px rgba(0,0,0,0.16);
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.16);
   padding: 14px clamp(16px, 4vw, 28px) calc(16px + var(--safe-bottom));
   max-height: 62vh;
   overflow-y: auto;
@@ -78,7 +83,7 @@ html, body {
   width: 40px;
   height: 4px;
   border-radius: 4px;
-  background: #E2E2DC;
+  background: #e2e2dc;
   margin: 0 auto 12px;
 }
 
@@ -96,28 +101,48 @@ html, body {
   animation: gv-pulse 2s ease-out infinite;
 }
 @keyframes gv-pulse {
-  0%   { transform: scale(0.6); opacity: 0.8; }
-  100% { transform: scale(2.2); opacity: 0; }
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
 }
 
 /* ── Responsive breakpoints ──────────────────────────────────────────────── */
 /* Small phones */
 @media (max-width: 380px) {
-  .fare-display-amount { font-size: 52px !important; }
-  .hide-xs { display: none !important; }
+  .fare-display-amount {
+    font-size: 52px !important;
+  }
+  .hide-xs {
+    display: none !important;
+  }
 }
 
 /* Phones */
 @media (max-width: 640px) {
-  .admin-stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
-  .admin-content-grid { grid-template-columns: 1fr !important; }
-  .dispatcher-grid { grid-template-columns: 1fr !important; }
-  .fare-matrix-wrap { font-size: 12px; }
+  .admin-stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .admin-content-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .dispatcher-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .fare-matrix-wrap {
+    font-size: 12px;
+  }
 }
 
 /* Tablets */
 @media (min-width: 641px) and (max-width: 1024px) {
-  .admin-stats-grid { grid-template-columns: repeat(4, 1fr) !important; }
+  .admin-stats-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+  }
 }
 
 /* Desktop: kiosk becomes centered "device frame" so it still reads as a kiosk */
@@ -125,25 +150,40 @@ html, body {
   .kiosk-shell {
     max-width: 480px;
     margin: 0 auto;
-    box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 40px 100px rgba(0,0,0,0.5);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 40px 100px rgba(0, 0, 0, 0.5);
   }
 }
 
 /* Landscape phones: shrink the sheet so map stays visible */
 @media (max-height: 480px) and (orientation: landscape) {
-  .bottom-sheet { max-height: 78vh; }
-  .kiosk-map-zone { flex: 0 0 30%; }
+  .bottom-sheet {
+    max-height: 78vh;
+  }
+  .kiosk-map-zone {
+    flex: 0 0 30%;
+  }
 }
 
-table { border-collapse: collapse; width: 100%; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
 
 @media (max-width: 700px) {
-  .responsive-table thead { display: none; }
-  .responsive-table, .responsive-table tbody, .responsive-table tr, .responsive-table td {
-    display: block; width: 100%;
+  .responsive-table thead {
+    display: none;
+  }
+  .responsive-table,
+  .responsive-table tbody,
+  .responsive-table tr,
+  .responsive-table td {
+    display: block;
+    width: 100%;
   }
   .responsive-table tr {
-    border: 1px solid #E2E2DC;
+    border: 1px solid #e2e2dc;
     border-radius: 10px;
     margin-bottom: 10px;
     padding: 8px 12px;
@@ -158,8 +198,8 @@ table { border-collapse: collapse; width: 100%; }
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #6B7280;
-    font-family: 'Space Grotesk', sans-serif;
+    color: #6b7280;
+    font-family: "Space Grotesk", sans-serif;
     margin-bottom: 2px;
   }
 }

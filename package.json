@@ -1,7 +1,7 @@
 {
   "name": "gravitry-poc",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,8 @@
     "lucide-react": "^0.383.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-leaflet": "^4.2.1"
+    "react-leaflet": "^4.2.1",
+    "react-router-dom": "^6.26.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
