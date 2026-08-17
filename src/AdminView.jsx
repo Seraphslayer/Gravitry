@@ -1,18 +1,22 @@
-import { useState } from "react";
-import { Truck, Plus, Star } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Truck, Star } from "lucide-react";
 import {
   C,
   GR,
   IN,
   TERMINALS,
-  INIT_DRIVERS,
-  INIT_TRICYCLES,
-  FARES,
   getTerm,
   fmtTime,
   getDocStatus,
   Logo,
 } from "./shared.jsx";
+import {
+  getDrivers,
+  getTricycles,
+  getFares,
+  updateFare,
+  getRequests,
+} from "./api.js";
 
 function Badge({ children, variant = "gray" }) {
   const map = {
@@ -40,7 +44,6 @@ function Badge({ children, variant = "gray" }) {
     </span>
   );
 }
-
 function statusBadge(s) {
   const m = {
     available: ["green", "● Available"],
@@ -50,7 +53,6 @@ function statusBadge(s) {
   const [v, label] = m[s] || ["gray", s];
   return <Badge variant={v}>{label}</Badge>;
 }
-
 function DocBadge({ label, status }) {
   const map = {
     red: { bg: "#FEE2E2", fg: "#991B1B" },
@@ -87,7 +89,7 @@ function DocBadge({ label, status }) {
   );
 }
 
-function DriversTab() {
+function DriversTab({ drivers, loading }) {
   return (
     <div
       style={{
@@ -98,15 +100,7 @@ function DriversTab() {
       }}
     >
       <div
-        style={{
-          padding: "14px 16px",
-          borderBottom: `1px solid ${C.border}`,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 8,
-        }}
+        style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}` }}
       >
         <span
           style={{
@@ -118,24 +112,6 @@ function DriversTab() {
         >
           Registered Drivers
         </span>
-        <button
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: C.navy,
-            color: "#fff",
-            border: "none",
-            borderRadius: 8,
-            padding: "7px 14px",
-            fontFamily: GR,
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          <Plus size={14} /> Add Driver
-        </button>
       </div>
       <table className="responsive-table">
         <thead>
@@ -167,126 +143,147 @@ function DriversTab() {
           </tr>
         </thead>
         <tbody>
-          {INIT_DRIVERS.map((d, i) => (
-            <tr
-              key={d.id}
-              style={{
-                borderTop: `1px solid ${C.border}`,
-                background: i % 2 === 0 ? C.white : "#FAFAF8",
-              }}
-            >
-              <td data-label="Driver" style={{ padding: "12px 16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: 8,
-                      background: C.navy,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: C.yellow,
-                      fontFamily: GR,
-                      fontWeight: 700,
-                      fontSize: 11,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {d.name
-                      .split(" ")
-                      .slice(0, 2)
-                      .map((p) => p[0])
-                      .join("")}
-                  </div>
-                  <span
-                    style={{
-                      fontFamily: GR,
-                      fontWeight: 600,
-                      fontSize: 13,
-                      color: C.text,
-                    }}
-                  >
-                    {d.name}
-                  </span>
-                </div>
-              </td>
+          {loading && (
+            <tr>
               <td
-                data-label="License No."
+                colSpan={7}
                 style={{
-                  padding: "12px 16px",
-                  fontFamily: "monospace",
-                  fontSize: 12,
+                  padding: 24,
+                  textAlign: "center",
                   color: C.muted,
-                }}
-              >
-                {d.license}
-              </td>
-              <td
-                data-label="Contact"
-                style={{
-                  padding: "12px 16px",
                   fontFamily: IN,
-                  fontSize: 12,
-                  color: C.text,
-                }}
-              >
-                {d.contact}
-              </td>
-              <td
-                data-label="Unit"
-                style={{
-                  padding: "12px 16px",
-                  fontFamily: "monospace",
                   fontSize: 13,
-                  fontWeight: 700,
-                  color: C.text,
                 }}
               >
-                {d.unit}
-              </td>
-              <td data-label="Rating" style={{ padding: "12px 16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <Star size={13} color={C.yellow} fill={C.yellow} />
-                  <span
-                    style={{
-                      fontFamily: GR,
-                      fontWeight: 700,
-                      fontSize: 13,
-                      color: C.text,
-                    }}
-                  >
-                    {d.rating}
-                  </span>
-                  <span
-                    style={{ fontFamily: IN, fontSize: 10.5, color: C.muted }}
-                  >
-                    ({d.tripsCompleted})
-                  </span>
-                </div>
-              </td>
-              <td data-label="Documents" style={{ padding: "12px 16px" }}>
-                <DocBadge
-                  label="License"
-                  status={getDocStatus(d.licenseExpiry)}
-                />
-                <DocBadge
-                  label="Franchise"
-                  status={getDocStatus(d.franchiseExpiry)}
-                />
-              </td>
-              <td data-label="Status" style={{ padding: "12px 16px" }}>
-                {statusBadge(d.status)}
+                Loading…
               </td>
             </tr>
-          ))}
+          )}
+          {!loading &&
+            drivers.map((d, i) => (
+              <tr
+                key={d._id}
+                style={{
+                  borderTop: `1px solid ${C.border}`,
+                  background: i % 2 === 0 ? C.white : "#FAFAF8",
+                }}
+              >
+                <td data-label="Driver" style={{ padding: "12px 16px" }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    <div
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: 8,
+                        background: C.navy,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: C.yellow,
+                        fontFamily: GR,
+                        fontWeight: 700,
+                        fontSize: 11,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {d.name
+                        .split(" ")
+                        .slice(0, 2)
+                        .map((p) => p[0])
+                        .join("")}
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: GR,
+                        fontWeight: 600,
+                        fontSize: 13,
+                        color: C.text,
+                      }}
+                    >
+                      {d.name}
+                    </span>
+                  </div>
+                </td>
+                <td
+                  data-label="License No."
+                  style={{
+                    padding: "12px 16px",
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    color: C.muted,
+                  }}
+                >
+                  {d.license}
+                </td>
+                <td
+                  data-label="Contact"
+                  style={{
+                    padding: "12px 16px",
+                    fontFamily: IN,
+                    fontSize: 12,
+                    color: C.text,
+                  }}
+                >
+                  {d.contact}
+                </td>
+                <td
+                  data-label="Unit"
+                  style={{
+                    padding: "12px 16px",
+                    fontFamily: "monospace",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: C.text,
+                  }}
+                >
+                  {d.unit}
+                </td>
+                <td data-label="Rating" style={{ padding: "12px 16px" }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 5 }}
+                  >
+                    <Star size={13} color={C.yellow} fill={C.yellow} />
+                    <span
+                      style={{
+                        fontFamily: GR,
+                        fontWeight: 700,
+                        fontSize: 13,
+                        color: C.text,
+                      }}
+                    >
+                      {d.rating}
+                    </span>
+                    <span
+                      style={{ fontFamily: IN, fontSize: 10.5, color: C.muted }}
+                    >
+                      ({d.tripsCompleted})
+                    </span>
+                  </div>
+                </td>
+                <td data-label="Documents" style={{ padding: "12px 16px" }}>
+                  <DocBadge
+                    label="License"
+                    status={getDocStatus(d.licenseExpiry)}
+                  />
+                  <DocBadge
+                    label="Franchise"
+                    status={getDocStatus(d.franchiseExpiry)}
+                  />
+                </td>
+                <td data-label="Status" style={{ padding: "12px 16px" }}>
+                  {statusBadge(d.status)}
+                </td>
+              </tr>
+            ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-function TricyclesTab() {
+function TricyclesTab({ tricycles, loading }) {
   return (
     <div
       style={{
@@ -297,15 +294,7 @@ function TricyclesTab() {
       }}
     >
       <div
-        style={{
-          padding: "14px 16px",
-          borderBottom: `1px solid ${C.border}`,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 8,
-        }}
+        style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}` }}
       >
         <span
           style={{
@@ -317,24 +306,6 @@ function TricyclesTab() {
         >
           Registered Tricycles
         </span>
-        <button
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: C.navy,
-            color: "#fff",
-            border: "none",
-            borderRadius: 8,
-            padding: "7px 14px",
-            fontFamily: GR,
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: "pointer",
-          }}
-        >
-          <Plus size={14} /> Register Unit
-        </button>
       </div>
       <table className="responsive-table">
         <thead>
@@ -360,94 +331,124 @@ function TricyclesTab() {
           </tr>
         </thead>
         <tbody>
-          {INIT_TRICYCLES.map((t, i) => (
-            <tr
-              key={t.id}
-              style={{
-                borderTop: `1px solid ${C.border}`,
-                background: i % 2 === 0 ? C.white : "#FAFAF8",
-              }}
-            >
-              <td data-label="Unit" style={{ padding: "12px 16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: 8,
-                      background: C.navy,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Truck size={14} color={C.yellow} />
-                  </div>
-                  <span
-                    style={{
-                      fontFamily: "monospace",
-                      fontWeight: 700,
-                      fontSize: 13,
-                      color: C.text,
-                    }}
-                  >
-                    {t.id}
-                  </span>
-                </div>
-              </td>
+          {loading && (
+            <tr>
               <td
-                data-label="Plate"
+                colSpan={5}
                 style={{
-                  padding: "12px 16px",
-                  fontFamily: "monospace",
-                  fontSize: 12,
+                  padding: 24,
+                  textAlign: "center",
                   color: C.muted,
-                }}
-              >
-                {t.plate}
-              </td>
-              <td
-                data-label="Driver"
-                style={{
-                  padding: "12px 16px",
                   fontFamily: IN,
                   fontSize: 13,
-                  color: C.text,
                 }}
               >
-                {t.driver}
-              </td>
-              <td
-                data-label="Terminal"
-                style={{
-                  padding: "12px 16px",
-                  fontFamily: IN,
-                  fontSize: 12,
-                  color: t.terminal ? C.text : C.muted,
-                }}
-              >
-                {t.terminal ? getTerm(t.terminal)?.short : "—"}
-              </td>
-              <td data-label="Status" style={{ padding: "12px 16px" }}>
-                {statusBadge(t.status)}
+                Loading…
               </td>
             </tr>
-          ))}
+          )}
+          {!loading &&
+            tricycles.map((t, i) => (
+              <tr
+                key={t._id}
+                style={{
+                  borderTop: `1px solid ${C.border}`,
+                  background: i % 2 === 0 ? C.white : "#FAFAF8",
+                }}
+              >
+                <td data-label="Unit" style={{ padding: "12px 16px" }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    <div
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: 8,
+                        background: C.navy,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Truck size={14} color={C.yellow} />
+                    </div>
+                    <span
+                      style={{
+                        fontFamily: "monospace",
+                        fontWeight: 700,
+                        fontSize: 13,
+                        color: C.text,
+                      }}
+                    >
+                      {t._id}
+                    </span>
+                  </div>
+                </td>
+                <td
+                  data-label="Plate"
+                  style={{
+                    padding: "12px 16px",
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    color: C.muted,
+                  }}
+                >
+                  {t.plate}
+                </td>
+                <td
+                  data-label="Driver"
+                  style={{
+                    padding: "12px 16px",
+                    fontFamily: IN,
+                    fontSize: 13,
+                    color: C.text,
+                  }}
+                >
+                  {t.driver}
+                </td>
+                <td
+                  data-label="Terminal"
+                  style={{
+                    padding: "12px 16px",
+                    fontFamily: IN,
+                    fontSize: 12,
+                    color: t.terminal ? C.text : C.muted,
+                  }}
+                >
+                  {t.terminal ? getTerm(t.terminal)?.short : "—"}
+                </td>
+                <td data-label="Status" style={{ padding: "12px 16px" }}>
+                  {statusBadge(t.status)}
+                </td>
+              </tr>
+            ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-function FaresTab() {
-  const [fares, setFares] = useState({ ...FARES });
+function FaresTab({ fares, loading, onUpdated }) {
   const [editing, setEditing] = useState(null);
   const [editVal, setEditVal] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  const save = (key) => {
+  const save = async (origin, destination, key) => {
     const v = parseInt(editVal);
-    if (!isNaN(v) && v > 0) setFares((p) => ({ ...p, [key]: v }));
+    if (isNaN(v) || v <= 0) {
+      setEditing(null);
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateFare(origin, destination, v);
+      onUpdated(key, v);
+    } catch {
+      /* keep old value shown on failure */
+    }
+    setSaving(false);
     setEditing(null);
   };
 
@@ -491,153 +492,169 @@ function FaresTab() {
           className="fare-matrix-wrap"
           style={{ overflowX: "auto", padding: "16px clamp(8px,3vw,20px)" }}
         >
-          <table style={{ borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th
-                  style={{
-                    padding: "8px 12px",
-                    textAlign: "left",
-                    fontSize: 12,
-                    fontFamily: GR,
-                    fontWeight: 700,
-                    color: C.muted,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  Origin / Dest
-                </th>
-                {TERMINALS.map((t) => (
+          {loading ? (
+            <p
+              style={{
+                fontFamily: IN,
+                fontSize: 13,
+                color: C.muted,
+                textAlign: "center",
+                padding: 20,
+              }}
+            >
+              Loading…
+            </p>
+          ) : (
+            <table style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
                   <th
-                    key={t.id}
                     style={{
-                      padding: "8px 14px",
+                      padding: "8px 12px",
+                      textAlign: "left",
                       fontSize: 12,
                       fontFamily: GR,
                       fontWeight: 700,
-                      color: C.navy,
-                      textAlign: "center",
-                      minWidth: 74,
-                    }}
-                  >
-                    {t.short}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {TERMINALS.map((origin, oi) => (
-                <tr
-                  key={origin.id}
-                  style={{ background: oi % 2 === 0 ? C.white : "#FAFAF8" }}
-                >
-                  <td
-                    style={{
-                      padding: "8px 12px",
-                      fontFamily: GR,
-                      fontWeight: 700,
-                      fontSize: 12.5,
-                      color: C.navy,
+                      color: C.muted,
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {origin.short}
-                  </td>
-                  {TERMINALS.map((dest) => {
-                    const key = `${origin.id}-${dest.id}`;
-                    const same = origin.id === dest.id;
-                    const isEdit = editing === key;
-                    return (
-                      <td
-                        key={dest.id}
-                        style={{ padding: "6px 8px", textAlign: "center" }}
-                      >
-                        {same ? (
-                          <span style={{ color: C.border, fontSize: 14 }}>
-                            —
-                          </span>
-                        ) : isEdit ? (
-                          <div
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                            }}
-                          >
-                            <input
-                              value={editVal}
-                              onChange={(e) => setEditVal(e.target.value)}
+                    Origin / Dest
+                  </th>
+                  {TERMINALS.map((t) => (
+                    <th
+                      key={t.id}
+                      style={{
+                        padding: "8px 14px",
+                        fontSize: 12,
+                        fontFamily: GR,
+                        fontWeight: 700,
+                        color: C.navy,
+                        textAlign: "center",
+                        minWidth: 74,
+                      }}
+                    >
+                      {t.short}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {TERMINALS.map((origin, oi) => (
+                  <tr
+                    key={origin.id}
+                    style={{ background: oi % 2 === 0 ? C.white : "#FAFAF8" }}
+                  >
+                    <td
+                      style={{
+                        padding: "8px 12px",
+                        fontFamily: GR,
+                        fontWeight: 700,
+                        fontSize: 12.5,
+                        color: C.navy,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {origin.short}
+                    </td>
+                    {TERMINALS.map((dest) => {
+                      const key = `${origin.id}-${dest.id}`;
+                      const same = origin.id === dest.id;
+                      const isEdit = editing === key;
+                      return (
+                        <td
+                          key={dest.id}
+                          style={{ padding: "6px 8px", textAlign: "center" }}
+                        >
+                          {same ? (
+                            <span style={{ color: C.border, fontSize: 14 }}>
+                              —
+                            </span>
+                          ) : isEdit ? (
+                            <div
                               style={{
-                                width: 44,
-                                padding: "3px 5px",
-                                border: `2px solid ${C.green}`,
-                                borderRadius: 6,
-                                fontFamily: "monospace",
-                                fontSize: 12,
-                                textAlign: "center",
-                                outline: "none",
-                              }}
-                              autoFocus
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") save(key);
-                                if (e.key === "Escape") setEditing(null);
-                              }}
-                            />
-                            <button
-                              onClick={() => save(key)}
-                              style={{
-                                background: C.green,
-                                color: "#fff",
-                                border: "none",
-                                borderRadius: 5,
-                                padding: "3px 7px",
-                                cursor: "pointer",
-                                fontSize: 11,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
                               }}
                             >
-                              ✓
+                              <input
+                                value={editVal}
+                                onChange={(e) => setEditVal(e.target.value)}
+                                style={{
+                                  width: 44,
+                                  padding: "3px 5px",
+                                  border: `2px solid ${C.green}`,
+                                  borderRadius: 6,
+                                  fontFamily: "monospace",
+                                  fontSize: 12,
+                                  textAlign: "center",
+                                  outline: "none",
+                                }}
+                                autoFocus
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter")
+                                    save(origin.id, dest.id, key);
+                                  if (e.key === "Escape") setEditing(null);
+                                }}
+                              />
+                              <button
+                                onClick={() => save(origin.id, dest.id, key)}
+                                disabled={saving}
+                                style={{
+                                  background: C.green,
+                                  color: "#fff",
+                                  border: "none",
+                                  borderRadius: 5,
+                                  padding: "3px 7px",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                }}
+                              >
+                                ✓
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setEditing(key);
+                                setEditVal(String(fares[key] ?? ""));
+                              }}
+                              style={{
+                                background: "#ECFDF5",
+                                border: "none",
+                                borderRadius: 8,
+                                padding: "5px 10px",
+                                fontFamily: GR,
+                                fontWeight: 700,
+                                fontSize: 12.5,
+                                color: C.greenDark,
+                                cursor: "pointer",
+                                minWidth: 46,
+                              }}
+                            >
+                              ₱{fares[key] ?? "—"}
                             </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              setEditing(key);
-                              setEditVal(String(fares[key] || ""));
-                            }}
-                            style={{
-                              background: "#ECFDF5",
-                              border: "none",
-                              borderRadius: 8,
-                              padding: "5px 10px",
-                              fontFamily: GR,
-                              fontWeight: 700,
-                              fontSize: 12.5,
-                              color: C.greenDark,
-                              cursor: "pointer",
-                              minWidth: 46,
-                            }}
-                          >
-                            ₱{fares[key]}
-                          </button>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
       <p style={{ fontSize: 11.5, color: C.muted, fontFamily: IN, margin: 0 }}>
-        ℹ️ Fare edits are versioned — previous rates are retained with their
-        effective date range.
+        ℹ️ Fare edits are versioned in the database — previous rates are kept in
+        a history log.
       </p>
     </div>
   );
 }
 
-function LogTab({ logs }) {
+function LogTab({ logs, loading }) {
   return (
     <div
       style={{
@@ -664,31 +681,49 @@ function LogTab({ logs }) {
       <table className="responsive-table">
         <thead>
           <tr style={{ background: C.surface }}>
-            {["ID", "Route", "Driver / Unit", "Fare", "Time"].map((h) => (
-              <th
-                key={h}
-                style={{
-                  padding: "10px 16px",
-                  textAlign: "left",
-                  fontSize: 11,
-                  fontFamily: GR,
-                  fontWeight: 600,
-                  color: C.muted,
-                  textTransform: "uppercase",
-                }}
-              >
-                {h}
-              </th>
-            ))}
+            {["ID", "Route", "Driver / Unit", "Fare", "Time", "Status"].map(
+              (h) => (
+                <th
+                  key={h}
+                  style={{
+                    padding: "10px 16px",
+                    textAlign: "left",
+                    fontSize: 11,
+                    fontFamily: GR,
+                    fontWeight: 600,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {h}
+                </th>
+              ),
+            )}
           </tr>
         </thead>
         <tbody>
-          {logs.length === 0 && (
+          {loading && (
             <tr>
               <td
-                colSpan={5}
+                colSpan={6}
                 style={{
-                  padding: "32px 16px",
+                  padding: 32,
+                  textAlign: "center",
+                  color: C.muted,
+                  fontFamily: IN,
+                  fontSize: 13,
+                }}
+              >
+                Loading…
+              </td>
+            </tr>
+          )}
+          {!loading && logs.length === 0 && (
+            <tr>
+              <td
+                colSpan={6}
+                style={{
+                  padding: 32,
                   textAlign: "center",
                   color: C.muted,
                   fontFamily: IN,
@@ -699,101 +734,146 @@ function LogTab({ logs }) {
               </td>
             </tr>
           )}
-          {logs.map((log, i) => (
-            <tr
-              key={log.id}
-              style={{
-                borderTop: `1px solid ${C.border}`,
-                background: i % 2 === 0 ? C.white : "#FAFAF8",
-              }}
-            >
-              <td
-                data-label="ID"
+          {!loading &&
+            logs.map((log, i) => (
+              <tr
+                key={log._id}
                 style={{
-                  padding: "11px 16px",
-                  fontFamily: "monospace",
-                  fontSize: 11,
-                  color: C.muted,
+                  borderTop: `1px solid ${C.border}`,
+                  background: i % 2 === 0 ? C.white : "#FAFAF8",
                 }}
               >
-                {log.id}
-              </td>
-              <td
-                data-label="Route"
-                style={{
-                  padding: "11px 16px",
-                  fontFamily: GR,
-                  fontSize: 12,
-                  color: C.text,
-                  fontWeight: 600,
-                }}
-              >
-                {getTerm(log.origin)?.short} → {getTerm(log.destination)?.short}
-              </td>
-              <td data-label="Driver" style={{ padding: "11px 16px" }}>
-                <div style={{ fontFamily: IN, fontSize: 12, color: C.text }}>
-                  {log.driver}
-                </div>
-                <div
+                <td
+                  data-label="ID"
                   style={{
+                    padding: "11px 16px",
                     fontFamily: "monospace",
                     fontSize: 11,
                     color: C.muted,
                   }}
                 >
-                  {log.unit} · {log.plate}
-                </div>
-              </td>
-              <td
-                data-label="Fare"
-                style={{
-                  padding: "11px 16px",
-                  fontFamily: GR,
-                  fontWeight: 700,
-                  fontSize: 13,
-                  color: C.green,
-                }}
-              >
-                ₱{log.fare}.00
-              </td>
-              <td
-                data-label="Time"
-                style={{
-                  padding: "11px 16px",
-                  fontFamily: IN,
-                  fontSize: 12,
-                  color: C.muted,
-                }}
-              >
-                {fmtTime(log.ts)}
-              </td>
-            </tr>
-          ))}
+                  {log._id}
+                </td>
+                <td
+                  data-label="Route"
+                  style={{
+                    padding: "11px 16px",
+                    fontFamily: GR,
+                    fontSize: 12,
+                    color: C.text,
+                    fontWeight: 600,
+                  }}
+                >
+                  {getTerm(log.origin)?.short} →{" "}
+                  {getTerm(log.destination)?.short}
+                </td>
+                <td data-label="Driver" style={{ padding: "11px 16px" }}>
+                  <div style={{ fontFamily: IN, fontSize: 12, color: C.text }}>
+                    {log.driver || "—"}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 11,
+                      color: C.muted,
+                    }}
+                  >
+                    {log.unit || ""} {log.plate ? `· ${log.plate}` : ""}
+                  </div>
+                </td>
+                <td
+                  data-label="Fare"
+                  style={{
+                    padding: "11px 16px",
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 13,
+                    color: C.green,
+                  }}
+                >
+                  ₱{log.fare}.00
+                </td>
+                <td
+                  data-label="Time"
+                  style={{
+                    padding: "11px 16px",
+                    fontFamily: IN,
+                    fontSize: 12,
+                    color: C.muted,
+                  }}
+                >
+                  {fmtTime(log.ts)}
+                </td>
+                <td data-label="Status" style={{ padding: "11px 16px" }}>
+                  <Badge
+                    variant={
+                      log.status === "completed"
+                        ? "green"
+                        : log.status === "dispatched"
+                          ? "blue"
+                          : "gray"
+                    }
+                  >
+                    {log.status}
+                  </Badge>
+                </td>
+              </tr>
+            ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-export default function AdminView({ dispatchLog }) {
+export default function AdminView() {
   const [tab, setTab] = useState("drivers");
+  const [drivers, setDrivers] = useState([]);
+  const [tricycles, setTricycles] = useState([]);
+  const [fares, setFares] = useState({});
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadAll = useCallback(async () => {
+    try {
+      const [d, t, f, l] = await Promise.all([
+        getDrivers(),
+        getTricycles(),
+        getFares(),
+        getRequests({}),
+      ]);
+      setDrivers(d);
+      setTricycles(t);
+      setFares(f);
+      setLogs(l);
+    } catch {
+      /* keep last known good state */
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    loadAll();
+    const id = setInterval(loadAll, 8000);
+    return () => clearInterval(id);
+  }, [loadAll]);
+
   const stats = [
     {
       label: "Registered Drivers",
-      value: INIT_DRIVERS.length,
-      sub: `${INIT_DRIVERS.filter((d) => d.status === "available").length} available`,
+      value: drivers.length,
+      sub: `${drivers.filter((d) => d.status === "available").length} available`,
     },
     {
       label: "Tricycle Units",
-      value: INIT_TRICYCLES.length,
-      sub: `${INIT_TRICYCLES.filter((t) => t.status === "available").length} at terminal`,
+      value: tricycles.length,
+      sub: `${tricycles.filter((t) => t.status === "available").length} at terminal`,
     },
+    { label: "Dispatch Log Entries", value: logs.length, sub: "all time" },
     {
-      label: "Dispatch Log Entries",
-      value: dispatchLog.length,
-      sub: "all time",
+      label: "Terminal Coverage",
+      value: `${TERMINALS.length} / ${TERMINALS.length}`,
+      sub: "all active",
     },
-    { label: "Terminal Coverage", value: "4 / 4", sub: "all active" },
   ];
 
   return (
@@ -933,10 +1013,20 @@ export default function AdminView({ dispatchLog }) {
           ))}
         </div>
 
-        {tab === "drivers" && <DriversTab />}
-        {tab === "tricycles" && <TricyclesTab />}
-        {tab === "fares" && <FaresTab />}
-        {tab === "log" && <LogTab logs={dispatchLog} />}
+        {tab === "drivers" && (
+          <DriversTab drivers={drivers} loading={loading} />
+        )}
+        {tab === "tricycles" && (
+          <TricyclesTab tricycles={tricycles} loading={loading} />
+        )}
+        {tab === "fares" && (
+          <FaresTab
+            fares={fares}
+            loading={loading}
+            onUpdated={(key, v) => setFares((p) => ({ ...p, [key]: v }))}
+          />
+        )}
+        {tab === "log" && <LogTab logs={logs} loading={loading} />}
       </div>
     </div>
   );
