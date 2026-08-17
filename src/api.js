@@ -1,6 +1,5 @@
 // Thin fetch wrapper around the /api serverless backend.
-// All calls are same-origin (frontend + API deploy together on Vercel),
-// so no base URL or CORS handling is needed.
+// All calls are same-origin (frontend + API deploy together on Vercel).
 
 async function req(path, options = {}) {
   const res = await fetch(`/api/${path}`, {
@@ -29,7 +28,10 @@ export const updateFare = (origin, destination, fare) =>
 // ── Drivers ───────────────────────────────────────────────────────────────
 export const getDrivers = () => req("drivers");
 export const updateDriver = (id, patch) =>
-  req(`drivers/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+  req(`drivers?id=${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
 
 // ── Tricycles ─────────────────────────────────────────────────────────────
 export const getTricycles = () => req("tricycles");
@@ -46,13 +48,16 @@ export const getRequests = (params = {}) => {
   return req(`requests${qs ? `?${qs}` : ""}`);
 };
 
-export const getRequestById = (id) => req(`requests/${id}`);
+export const getRequestById = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}`);
 
 export const acceptRequest = (id, driverId) =>
-  req(`requests/${id}/accept`, {
+  req(`requests?id=${encodeURIComponent(id)}&action=accept`, {
     method: "POST",
     body: JSON.stringify({ driverId }),
   });
 
 export const completeRequest = (id) =>
-  req(`requests/${id}/complete`, { method: "POST" });
+  req(`requests?id=${encodeURIComponent(id)}&action=complete`, {
+    method: "POST",
+  });
