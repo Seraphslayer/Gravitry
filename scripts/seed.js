@@ -3,6 +3,7 @@ import dns from "node:dns";
 dns.setServers(["8.8.8.8", "8.8.4.4"]); // Windows/Node SRV lookup fix — see api/_db.js
 
 import { MongoClient } from "mongodb";
+import bcrypt from "bcryptjs";
 
 const uri = process.env.MONGODB_URI;
 if (!uri) {
@@ -11,6 +12,10 @@ if (!uri) {
   );
   process.exit(1);
 }
+
+const hash = (p) => bcrypt.hashSync(p, 10);
+const DEMO_DRIVER_PASSWORD = "toda2026"; // ⚠️ change before real deployment
+const DEMO_ADMIN_PASSWORD = "admin2026"; // ⚠️ change before real deployment
 
 const drivers = [
   {
@@ -25,6 +30,8 @@ const drivers = [
     tripsCompleted: 214,
     licenseExpiry: "2027-03-15",
     franchiseExpiry: "2026-11-02",
+    username: "rolando",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
   },
   {
     _id: "D2",
@@ -38,6 +45,8 @@ const drivers = [
     tripsCompleted: 189,
     licenseExpiry: "2026-08-20",
     franchiseExpiry: "2026-08-05",
+    username: "eduardo",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
   },
   {
     _id: "D3",
@@ -51,6 +60,8 @@ const drivers = [
     tripsCompleted: 301,
     licenseExpiry: "2028-01-10",
     franchiseExpiry: "2027-04-18",
+    username: "marlon",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
   },
   {
     _id: "D4",
@@ -64,6 +75,8 @@ const drivers = [
     tripsCompleted: 98,
     licenseExpiry: "2026-07-30",
     franchiseExpiry: "2026-12-01",
+    username: "danilo",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
   },
   {
     _id: "D5",
@@ -77,6 +90,8 @@ const drivers = [
     tripsCompleted: 47,
     licenseExpiry: "2026-06-01",
     franchiseExpiry: "2026-06-15",
+    username: "felix",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
   },
 ];
 
@@ -145,6 +160,15 @@ const fareEntries = [
   history: [{ fare, changedAt: new Date() }],
 }));
 
+const admins = [
+  {
+    _id: "U1",
+    username: "admin",
+    name: "TODA Admin",
+    passwordHash: hash(DEMO_ADMIN_PASSWORD),
+  },
+];
+
 async function seed() {
   const client = new MongoClient(uri);
   await client.connect();
@@ -154,6 +178,7 @@ async function seed() {
     ["drivers", drivers],
     ["tricycles", tricycles],
     ["fares", fareEntries],
+    ["users", admins],
   ]) {
     const col = db.collection(name);
     for (const doc of docs) {
@@ -171,6 +196,12 @@ async function seed() {
     );
 
   console.log("Done.");
+  console.log(
+    `Driver login (all 5): username as listed, password "${DEMO_DRIVER_PASSWORD}"`,
+  );
+  console.log(
+    `Admin login: username "admin", password "${DEMO_ADMIN_PASSWORD}"`,
+  );
   await client.close();
 }
 

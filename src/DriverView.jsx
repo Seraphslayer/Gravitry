@@ -8,6 +8,7 @@ import {
   Power,
   Star,
   Truck,
+  LogOut,
 } from "lucide-react";
 import {
   C,
@@ -24,10 +25,9 @@ import {
   acceptRequest,
   completeRequest,
 } from "./api.js";
+import { useAuth } from "./AuthContext.jsx";
 
-// Simulated logged-in driver — in a real deployment this would come from auth
-const MY_DRIVER_ID = "D1";
-const HOME_TERMINAL = "T1";
+const HOME_TERMINAL = "T1"; // TODO: make this per-driver once terminals are assignable in the DB
 
 function makeDivIcon(color, pulse = false) {
   return L.divIcon({
@@ -197,6 +197,7 @@ function RequestCard({ req, onAccept, accepting }) {
 }
 
 export default function DriverView() {
+  const { user, logout } = useAuth();
   const [me, setMe] = useState(null);
   const [online, setOnline] = useState(true);
   const [pending, setPending] = useState([]);
@@ -206,9 +207,9 @@ export default function DriverView() {
 
   useEffect(() => {
     getDrivers()
-      .then((list) => setMe(list.find((d) => d._id === MY_DRIVER_ID) || null))
+      .then((list) => setMe(list.find((d) => d._id === user.driverId) || null))
       .catch(() => setError("Could not load driver profile."));
-  }, []);
+  }, [user.driverId]);
 
   useEffect(() => {
     if (!online) return;
@@ -219,7 +220,7 @@ export default function DriverView() {
           getRequests({ status: "dispatched" }),
         ]);
         setPending(pendingReqs);
-        const mine = dispatchedReqs.find((r) => r.driverId === MY_DRIVER_ID);
+        const mine = dispatchedReqs.find((r) => r.driverId === user.driverId);
         setActiveTrip(mine || null);
         setError(null);
       } catch {
@@ -229,7 +230,7 @@ export default function DriverView() {
     tick();
     const id = setInterval(tick, 4000);
     return () => clearInterval(id);
-  }, [online]);
+  }, [online, user.driverId]);
 
   const destTerm = activeTrip ? getTerm(activeTrip.destination) : null;
   const flyTarget = destTerm || getTerm(HOME_TERMINAL);
@@ -237,7 +238,7 @@ export default function DriverView() {
   const handleAccept = async (req) => {
     setAccepting(true);
     try {
-      const doc = await acceptRequest(req._id, MY_DRIVER_ID);
+      const doc = await acceptRequest(req._id, user.driverId);
       setActiveTrip(doc);
       setPending((p) => p.filter((r) => r._id !== req._id));
     } catch {
@@ -311,8 +312,7 @@ export default function DriverView() {
           </span>
         </div>
 
-        <button
-          onClick={() => setOnline((o) => !o)}
+        <div
           style={{
             position: "absolute",
             top: "calc(12px + var(--safe-top))",
@@ -320,27 +320,54 @@ export default function DriverView() {
             zIndex: 400,
             display: "flex",
             alignItems: "center",
-            gap: 7,
-            background: online ? C.green : "rgba(255,255,255,0.95)",
-            padding: "8px 14px",
-            borderRadius: 20,
-            border: "none",
-            cursor: "pointer",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+            gap: 8,
           }}
         >
-          <Power size={14} color={online ? "#fff" : C.muted} />
-          <span
+          <button
+            onClick={() => setOnline((o) => !o)}
             style={{
-              color: online ? "#fff" : C.muted,
-              fontFamily: GR,
-              fontWeight: 700,
-              fontSize: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              background: online ? C.green : "rgba(255,255,255,0.95)",
+              padding: "8px 14px",
+              borderRadius: 20,
+              border: "none",
+              cursor: "pointer",
+              boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
             }}
           >
-            {online ? "Online" : "Offline"}
-          </span>
-        </button>
+            <Power size={14} color={online ? "#fff" : C.muted} />
+            <span
+              style={{
+                color: online ? "#fff" : C.muted,
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 12,
+              }}
+            >
+              {online ? "Online" : "Offline"}
+            </span>
+          </button>
+          <button
+            onClick={logout}
+            title="Log out"
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: "50%",
+              background: "rgba(255,255,255,0.95)",
+              border: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+            }}
+          >
+            <LogOut size={14} color={C.muted} />
+          </button>
+        </div>
 
         {activeTrip && (
           <div

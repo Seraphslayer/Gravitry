@@ -10,6 +10,8 @@
     "seed": "node scripts/seed.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "jsonwebtoken": "^9.0.3",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.383.0",
     "mongodb": "^6.9.0",

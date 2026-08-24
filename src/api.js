@@ -61,3 +61,14 @@ export const completeRequest = (id) =>
   req(`requests?id=${encodeURIComponent(id)}&action=complete`, {
     method: "POST",
   });
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+export const login = (username, password) =>
+  req("auth?action=login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+
+export const logout = () => req("auth?action=logout", { method: "POST" });
+
+export const getMe = () => req("auth?action=me");
