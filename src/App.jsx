@@ -5,6 +5,7 @@ import KioskView from "./KioskView.jsx";
 import DriverView from "./DriverView.jsx";
 import AdminView from "./AdminView.jsx";
 import LoginModal from "./LoginModal.jsx";
+import PassengerApp from "./PassengerApp.jsx";
 import { AuthProvider, useAuth } from "./AuthContext.jsx";
 
 function AuthGate({ role, children }) {
@@ -90,7 +91,8 @@ export default function App() {
     <div className="app-shell">
       <AuthProvider>
         <Routes>
-          <Route path="/" element={<KioskView />} />
+          <Route path="/" element={<PassengerApp />} />
+          <Route path="/kiosk" element={<KioskView />} />
           <Route
             path="/driver"
             element={

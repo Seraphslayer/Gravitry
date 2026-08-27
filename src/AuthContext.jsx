@@ -5,7 +5,12 @@ import {
   useEffect,
   useCallback,
 } from "react";
-import { login as apiLogin, logout as apiLogout, getMe } from "./api.js";
+import {
+  login as apiLogin,
+  logout as apiLogout,
+  signup as apiSignup,
+  getMe,
+} from "./api.js";
 
 const AuthContext = createContext(null);
 
@@ -32,6 +37,12 @@ export function AuthProvider({ children }) {
     return me;
   };
 
+  const signup = async (username, password, name, phone) => {
+    const me = await apiSignup(username, password, name, phone);
+    setUser(me);
+    return me;
+  };
+
   const logout = async () => {
     try {
       await apiLogout();
@@ -42,7 +53,9 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, refresh }}>
+    <AuthContext.Provider
+      value={{ user, loading, login, signup, logout, refresh }}
+    >
       {children}
     </AuthContext.Provider>
   );

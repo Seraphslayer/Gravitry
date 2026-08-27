@@ -17,6 +17,23 @@ async function req(path, options = {}) {
   return res.json();
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────────
+export const login = (username, password) =>
+  req("auth?action=login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+
+export const signup = (username, password, name, phone) =>
+  req("auth?action=signup", {
+    method: "POST",
+    body: JSON.stringify({ username, password, name, phone }),
+  });
+
+export const logout = () => req("auth?action=logout", { method: "POST" });
+
+export const getMe = () => req("auth?action=me");
+
 // ── Fares ─────────────────────────────────────────────────────────────────
 export const getFares = () => req("fares");
 export const updateFare = (origin, destination, fare) =>
@@ -37,10 +54,18 @@ export const updateDriver = (id, patch) =>
 export const getTricycles = () => req("tricycles");
 
 // ── Dispatch requests ─────────────────────────────────────────────────────
-export const createRequest = (origin, destination, fare) =>
+// passenger is optional: { id, name } — attaches identity for logged-in passengers
+export const createRequest = (origin, destination, fare, passenger) =>
   req("requests", {
     method: "POST",
-    body: JSON.stringify({ origin, destination, fare }),
+    body: JSON.stringify({
+      origin,
+      destination,
+      fare,
+      ...(passenger
+        ? { passengerId: passenger.id, passengerName: passenger.name }
+        : {}),
+    }),
   });
 
 export const getRequests = (params = {}) => {
@@ -61,14 +86,3 @@ export const completeRequest = (id) =>
   req(`requests?id=${encodeURIComponent(id)}&action=complete`, {
     method: "POST",
   });
-
-// ── Auth ──────────────────────────────────────────────────────────────────
-export const login = (username, password) =>
-  req("auth?action=login", {
-    method: "POST",
-    body: JSON.stringify({ username, password }),
-  });
-
-export const logout = () => req("auth?action=logout", { method: "POST" });
-
-export const getMe = () => req("auth?action=me");
