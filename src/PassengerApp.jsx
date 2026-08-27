@@ -65,6 +65,15 @@ const droppedPinIcon = L.divIcon({
   iconSize: [30, 30],
   iconAnchor: [15, 15],
 });
+const myLocationIcon = L.divIcon({
+  className: "",
+  html: `<div style="position:relative;width:20px;height:20px;">
+    <div style="position:absolute;inset:0;border-radius:50%;background:rgba(59,130,246,0.25);animation:gv-pulse 1.8s ease-out infinite;"></div>
+    <div style="position:absolute;top:4px;left:4px;width:12px;height:12px;border-radius:50%;background:#3B82F6;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35);"></div>
+  </div>`,
+  iconSize: [20, 20],
+  iconAnchor: [10, 10],
+});
 
 function FlyToTerminal({ target }) {
   const map = useMap();
@@ -588,7 +597,8 @@ function HistoryTab({ passengerId }) {
 }
 
 // ── Shared location-picker step — used for BOTH "where are you now" and
-// "where are you going", same search/pin/terminal-list UX as the kiosk ──────
+// "where are you going", same search/pin/terminal-list UX as the kiosk, plus
+// a "Use My Current Location" GPS option on the origin step ────────────────
 function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -596,6 +606,9 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
   const [pinMode, setPinMode] = useState(false);
   const [droppedPin, setDroppedPin] = useState(null);
   const [snap, setSnap] = useState(null);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState(null);
+  const [isGeo, setIsGeo] = useState(false);
 
   const excludeId = isOrigin ? null : originTerm?.id;
   const dests = TERMINALS.filter((t) => t.id !== excludeId);
@@ -620,19 +633,61 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
     return () => clearTimeout(t);
   }, [query]);
 
-  const pickLocation = (lat, lng) => {
+  const pickLocation = (lat, lng, geo = false) => {
     const lt = parseFloat(lat),
       lg = parseFloat(lng);
     setDroppedPin({ lat: lt, lng: lg });
+    setIsGeo(geo);
     setSnap(nearestTerminal(lt, lg, excludeId));
     setPinMode(false);
     setResults([]);
     setQuery("");
+    setLocationError(null);
+  };
+
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setLocationError(
+        "Your browser doesn't support location access. Try search or drop a pin instead.",
+      );
+      return;
+    }
+    setLocating(true);
+    setLocationError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        pickLocation(pos.coords.latitude, pos.coords.longitude, true);
+        setLocating(false);
+      },
+      (err) => {
+        setLocating(false);
+        if (err.code === err.PERMISSION_DENIED) {
+          setLocationError(
+            "Location access was denied. You can still search or drop a pin manually.",
+          );
+        } else if (err.code === err.TIMEOUT) {
+          setLocationError(
+            "Location took too long to find. Try again, or search/drop a pin instead.",
+          );
+        } else {
+          setLocationError(
+            "Couldn't get your location. Try search or drop a pin instead.",
+          );
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+    );
   };
 
   const confirmSnap = () => {
     if (snap?.terminal)
-      onPick(snap.terminal, { droppedPin, setPinMode, setDroppedPin, setSnap });
+      onPick(snap.terminal, {
+        droppedPin,
+        isGeo,
+        setPinMode,
+        setDroppedPin,
+        setSnap,
+      });
   };
 
   return (
@@ -661,6 +716,49 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
         </p>
       )}
       {isOrigin && <div style={{ marginBottom: 14 }} />}
+
+      {isOrigin && !snap && (
+        <button
+          onClick={useMyLocation}
+          disabled={locating}
+          style={{
+            width: "100%",
+            marginBottom: 10,
+            padding: "13px 16px",
+            borderRadius: 14,
+            border: "none",
+            background: locating ? C.muted : C.navy,
+            color: "#fff",
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 13.5,
+            cursor: locating ? "default" : "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+          }}
+        >
+          <Crosshair size={16} color={C.yellow} />
+          {locating ? "Finding your location…" : "Use My Current Location"}
+        </button>
+      )}
+
+      {locationError && (
+        <div
+          style={{
+            background: "#FEE2E2",
+            color: "#991B1B",
+            borderRadius: 10,
+            padding: "8px 12px",
+            fontSize: 12,
+            fontFamily: IN,
+            marginBottom: 12,
+          }}
+        >
+          {locationError}
+        </div>
+      )}
 
       <div style={{ position: "relative", marginBottom: 10 }}>
         <Search
@@ -841,7 +939,10 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
               marginBottom: 6,
             }}
           >
-            Nearest terminal to your pin ({snap.distanceMeters}m away):
+            {isGeo
+              ? "Nearest terminal to your location"
+              : "Nearest terminal to your pin"}{" "}
+            ({snap.distanceMeters}m away):
           </div>
           <div
             style={{
@@ -896,6 +997,7 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
             onClick={() => {
               setSnap(null);
               setDroppedPin(null);
+              setIsGeo(false);
             }}
             style={{
               marginTop: 8,
@@ -997,10 +1099,10 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
         </button>
       )}
 
-      {/* dropped pin marker, rendered via parent's map through droppedPin prop pass-up */}
       <PinMarkerSync
         droppedPin={droppedPin}
         pinMode={pinMode}
+        isGeo={isGeo}
         onMapPick={pickLocation}
       />
     </div>
@@ -1009,14 +1111,14 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
 
 // Bridges this step's dropped-pin/pin-mode state up to the always-mounted map
 // via a tiny event bus, since the map lives outside this component in the DOM tree.
-function PinMarkerSync({ droppedPin, pinMode, onMapPick }) {
+function PinMarkerSync({ droppedPin, pinMode, isGeo, onMapPick }) {
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("gv-pin-state", {
-        detail: { droppedPin, pinMode, onMapPick },
+        detail: { droppedPin, pinMode, isGeo, onMapPick },
       }),
     );
-  }, [droppedPin, pinMode, onMapPick]);
+  }, [droppedPin, pinMode, isGeo, onMapPick]);
   return null;
 }
 
@@ -1039,6 +1141,7 @@ export default function PassengerApp() {
   const [pinState, setPinState] = useState({
     droppedPin: null,
     pinMode: false,
+    isGeo: false,
     onMapPick: null,
   });
   useEffect(() => {
@@ -1049,7 +1152,12 @@ export default function PassengerApp() {
   useEffect(() => {
     // clear pin marker whenever we leave the origin/destination steps
     if (flowStep !== "origin" && flowStep !== "destination") {
-      setPinState({ droppedPin: null, pinMode: false, onMapPick: null });
+      setPinState({
+        droppedPin: null,
+        pinMode: false,
+        isGeo: false,
+        onMapPick: null,
+      });
     }
   }, [flowStep]);
 
@@ -1145,7 +1253,7 @@ export default function PassengerApp() {
           {inLocationStep && pinState.droppedPin && (
             <Marker
               position={[pinState.droppedPin.lat, pinState.droppedPin.lng]}
-              icon={droppedPinIcon}
+              icon={pinState.isGeo ? myLocationIcon : droppedPinIcon}
             />
           )}
           {TERMINALS.map((t) => (
