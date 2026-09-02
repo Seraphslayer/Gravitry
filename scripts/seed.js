@@ -126,7 +126,7 @@ const tricycles = [
     driverId: "D4",
     driver: "Danilo Bautista",
     status: "available",
-    terminal: "T1",
+    terminal: "T2",
   },
   {
     _id: "MCC-005",
@@ -138,19 +138,15 @@ const tricycles = [
   },
 ];
 
+// ⚠️ Placeholder fares for the 3 real terminals — replace with the actual
+// TODA-approved rates for these routes before real deployment.
 const fareEntries = [
   ["T1", "T2", 15],
-  ["T1", "T3", 12],
-  ["T1", "T4", 18],
+  ["T1", "T3", 18],
   ["T2", "T1", 15],
   ["T2", "T3", 12],
-  ["T2", "T4", 15],
-  ["T3", "T1", 12],
+  ["T3", "T1", 18],
   ["T3", "T2", 12],
-  ["T3", "T4", 15],
-  ["T4", "T1", 18],
-  ["T4", "T2", 15],
-  ["T4", "T3", 15],
 ].map(([origin, destination, fare]) => ({
   _id: `${origin}-${destination}`,
   origin,
@@ -173,6 +169,11 @@ async function seed() {
   const client = new MongoClient(uri);
   await client.connect();
   const db = client.db("gravitry");
+
+  // Clean out old T4-pair fare entries left over from the placeholder terminal set
+  await db.collection("fares").deleteMany({
+    $or: [{ origin: "T4" }, { destination: "T4" }],
+  });
 
   for (const [name, docs] of [
     ["drivers", drivers],

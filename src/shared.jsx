@@ -22,37 +22,29 @@ export const IN = '"Inter", sans-serif';
 // ── Mary Cris Complex — real coordinates (confirmed via Nominatim) ──────────
 export const COMPLEX_CENTER = [14.35612, 120.91735];
 
-// ── Terminals — static, rarely change, so kept on the frontend rather than DB ──
-// NOTE: placeholder GPS offsets around the confirmed complex center. Swap in
-// real per-terminal coordinates once the deployment site is finalized.
+// ── Terminals — real, confirmed GPS coordinates for Mary Cris Complex ───────
+// Kept static on the frontend rather than in the DB since they rarely change.
 export const TERMINALS = [
   {
     id: "T1",
-    name: "Terminal A (Sample)",
-    short: "Terminal A",
-    lat: 14.3566,
-    lng: 120.917,
+    name: "Main Terminal (MCC Entrance)",
+    short: "Main Terminal",
+    lat: 14.354615812078766,
+    lng: 120.92335026772189,
   },
   {
     id: "T2",
-    name: "Terminal B (Sample)",
-    short: "Terminal B",
-    lat: 14.3556,
-    lng: 120.9178,
+    name: "Terminal Beside 7-Eleven",
+    short: "7-Eleven Terminal",
+    lat: 14.355589361426508,
+    lng: 120.91816283580978,
   },
   {
     id: "T3",
-    name: "Terminal C (Sample)",
-    short: "Terminal C",
-    lat: 14.3568,
-    lng: 120.9179,
-  },
-  {
-    id: "T4",
-    name: "Terminal D (Sample)",
-    short: "Terminal D",
-    lat: 14.3554,
-    lng: 120.9168,
+    name: "Terminal in front of Alfamart",
+    short: "Alfamart Terminal",
+    lat: 14.356764679932585,
+    lng: 120.9168375420383,
   },
 ];
 
