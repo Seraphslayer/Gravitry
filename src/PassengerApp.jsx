@@ -39,6 +39,8 @@ import {
   TrikeIcon,
   Logo,
   nearestTerminal,
+  useLiveLocation,
+  myLocationIcon,
 } from "./shared.jsx";
 import { getFares, createRequest, getRequestById, getRequests } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
@@ -64,15 +66,6 @@ const droppedPinIcon = L.divIcon({
   html: `<div style="width:14px;height:14px;border-radius:50%;background:#DC2626;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);"></div>`,
   iconSize: [30, 30],
   iconAnchor: [15, 15],
-});
-const myLocationIcon = L.divIcon({
-  className: "",
-  html: `<div style="position:relative;width:20px;height:20px;">
-    <div style="position:absolute;inset:0;border-radius:50%;background:rgba(59,130,246,0.25);animation:gv-pulse 1.8s ease-out infinite;"></div>
-    <div style="position:absolute;top:4px;left:4px;width:12px;height:12px;border-radius:50%;background:#3B82F6;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35);"></div>
-  </div>`,
-  iconSize: [20, 20],
-  iconAnchor: [10, 10],
 });
 
 function FlyToTerminal({ target }) {
@@ -598,7 +591,7 @@ function HistoryTab({ passengerId }) {
 
 // ── Shared location-picker step — used for BOTH "where are you now" and
 // "where are you going", same search/pin/terminal-list UX as the kiosk, plus
-// a "Use My Current Location" GPS option on the origin step ────────────────
+// a "Use My Current Location" one-shot GPS pick on the origin step ─────────
 function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -1137,6 +1130,10 @@ export default function PassengerApp() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
+  // Persistent "you are here" GPS dot — always visible on the map, separate
+  // from the one-shot "Use My Current Location" picker used to select an origin.
+  const { position: myPosition } = useLiveLocation();
+
   // Pin-drop state bridged up from LocationStep so the always-visible map can render it
   const [pinState, setPinState] = useState({
     droppedPin: null,
@@ -1255,6 +1252,14 @@ export default function PassengerApp() {
               position={[pinState.droppedPin.lat, pinState.droppedPin.lng]}
               icon={pinState.isGeo ? myLocationIcon : droppedPinIcon}
             />
+          )}
+          {myPosition && (
+            <Marker
+              position={[myPosition.lat, myPosition.lng]}
+              icon={myLocationIcon}
+            >
+              <Popup>You are here</Popup>
+            </Marker>
           )}
           {TERMINALS.map((t) => (
             <Marker

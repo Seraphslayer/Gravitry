@@ -18,6 +18,8 @@ import {
   COMPLEX_CENTER,
   getTerm,
   TrikeIcon,
+  useLiveLocation,
+  myLocationIcon,
 } from "./shared.jsx";
 import {
   getDrivers,
@@ -205,6 +207,10 @@ export default function DriverView() {
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState(null);
 
+  // Persistent "you are here" GPS dot — lets the driver see their own live
+  // position on the map alongside the terminals and any active-trip destination.
+  const { position: myPosition } = useLiveLocation();
+
   useEffect(() => {
     getDrivers()
       .then((list) => setMe(list.find((d) => d._id === user.driverId) || null))
@@ -268,6 +274,14 @@ export default function DriverView() {
         >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
           <FlyTo target={flyTarget} />
+          {myPosition && (
+            <Marker
+              position={[myPosition.lat, myPosition.lng]}
+              icon={myLocationIcon}
+            >
+              <Popup>You are here</Popup>
+            </Marker>
+          )}
           {TERMINALS.map((t) => (
             <Marker
               key={t.id}

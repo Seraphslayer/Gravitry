@@ -32,6 +32,8 @@ import {
   fmtTime,
   TrikeIcon,
   nearestTerminal,
+  useLiveLocation,
+  myLocationIcon,
 } from "./shared.jsx";
 import { getFares, createRequest, getRequestById } from "./api.js";
 
@@ -125,9 +127,16 @@ export default function KioskView() {
   const [pinMode, setPinMode] = useState(false);
   const [droppedPin, setDroppedPin] = useState(null);
   const [snap, setSnap] = useState(null);
+  const [isGeo, setIsGeo] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  // Persistent "you are here" GPS dot — always visible on the map when available.
+  // Separate from the one-shot "Use My Current Location" picker below.
+  const { position: myPosition } = useLiveLocation();
 
   const originTerm = getTerm(KIOSK);
   const dests = TERMINALS.filter((t) => t.id !== KIOSK);
@@ -181,15 +190,44 @@ export default function KioskView() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const pickLocation = (lat, lng) => {
+  const pickLocation = (lat, lng, geo = false) => {
     const lt = parseFloat(lat),
       lg = parseFloat(lng);
     setDroppedPin({ lat: lt, lng: lg });
+    setIsGeo(geo);
     setSnap(nearestTerminal(lt, lg, KIOSK));
     setPinMode(false);
     setResults([]);
     setQuery("");
+    setLocationError(null);
   };
+
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setLocationError("This device doesn't support location access. Try search or drop a pin instead.");
+      return;
+    }
+    setLocating(true);
+    setLocationError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        pickLocation(pos.coords.latitude, pos.coords.longitude, true);
+        setLocating(false);
+      },
+      (err) => {
+        setLocating(false);
+        if (err.code === err.PERMISSION_DENIED) {
+          setLocationError("Location access was denied. Try search or drop a pin instead.");
+        } else if (err.code === err.TIMEOUT) {
+          setLocationError("Location took too long to find. Try again, or search/drop a pin instead.");
+        } else {
+          setLocationError("Couldn't get location. Try search or drop a pin instead.");
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
   const confirmSnap = () => {
     if (snap?.terminal) {
       setDest(snap.terminal);
@@ -220,6 +258,8 @@ export default function KioskView() {
     setPinMode(false);
     setDroppedPin(null);
     setSnap(null);
+    setIsGeo(false);
+    setLocationError(null);
     setError(null);
   };
   const flyTarget = dest || originTerm;
@@ -240,8 +280,13 @@ export default function KioskView() {
           {droppedPin && (
             <Marker
               position={[droppedPin.lat, droppedPin.lng]}
-              icon={droppedPinIcon}
+              icon={isGeo ? myLocationIcon : droppedPinIcon}
             />
+          )}
+          {myPosition && (
+            <Marker position={[myPosition.lat, myPosition.lng]} icon={myLocationIcon}>
+              <Popup>You are here</Popup>
+            </Marker>
           )}
           {TERMINALS.map((t) => (
             <Marker
@@ -536,6 +581,49 @@ export default function KioskView() {
               From {originTerm.name}
             </p>
 
+            {!snap && (
+              <button
+                onClick={useMyLocation}
+                disabled={locating}
+                style={{
+                  width: "100%",
+                  marginBottom: 10,
+                  padding: "13px 16px",
+                  borderRadius: 14,
+                  border: "none",
+                  background: locating ? C.muted : C.navy,
+                  color: "#fff",
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: 13.5,
+                  cursor: locating ? "default" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                }}
+              >
+                <Crosshair size={16} color={C.yellow} />
+                {locating ? "Finding location…" : "Use My Current Location"}
+              </button>
+            )}
+
+            {locationError && (
+              <div
+                style={{
+                  background: "#FEE2E2",
+                  color: "#991B1B",
+                  borderRadius: 10,
+                  padding: "8px 12px",
+                  fontSize: 12,
+                  fontFamily: IN,
+                  marginBottom: 12,
+                }}
+              >
+                {locationError}
+              </div>
+            )}
+
             <div style={{ position: "relative", marginBottom: 10 }}>
               <Search
                 size={16}
@@ -683,7 +771,7 @@ export default function KioskView() {
                     marginBottom: 6,
                   }}
                 >
-                  Nearest terminal to your pin ({snap.distanceMeters}m away):
+                  {isGeo ? "Nearest terminal to your location" : "Nearest terminal to your pin"} ({snap.distanceMeters}m away):
                 </div>
                 <div
                   style={{
@@ -735,6 +823,7 @@ export default function KioskView() {
                   onClick={() => {
                     setSnap(null);
                     setDroppedPin(null);
+                    setIsGeo(false);
                   }}
                   style={{
                     marginTop: 8,
@@ -832,6 +921,8 @@ export default function KioskView() {
                 setResults([]);
                 setSnap(null);
                 setDroppedPin(null);
+                setIsGeo(false);
+                setLocationError(null);
               }}
               style={{
                 marginTop: 14,
@@ -1346,7 +1437,7 @@ export default function KioskView() {
                     color: C.text,
                   }}
                 >
-                  v0.4.0
+                  v0.5.0
                 </span>
               </div>
             </div>

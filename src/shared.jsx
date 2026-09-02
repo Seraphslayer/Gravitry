@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import L from "leaflet";
+
 // ── Design Tokens ──────────────────────────────────────────────────────────
 export const C = {
   navy: "#0B2D48",
@@ -60,7 +63,7 @@ export const fmtTime = (iso) =>
     minute: "2-digit",
   });
 
-// ── Distance / nearest-terminal snapping (used by kiosk search + pin drop) ──
+// ── Distance / nearest-terminal snapping (used by kiosk/passenger search + pin drop) ──
 function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const toRad = (d) => (d * Math.PI) / 180;
@@ -95,6 +98,48 @@ export function getDocStatus(dateStr) {
     return { label: `${daysLeft}d left`, variant: "yellow", daysLeft };
   return { label: "Valid", variant: "green", daysLeft };
 }
+
+// ── Live GPS location — continuous tracking, shared across Kiosk/Driver/Passenger ──
+// Uses watchPosition (not a one-shot fetch) so the "you are here" marker stays
+// current as the device moves. Cleans up its watch on unmount. Silent no-op if
+// the browser denies permission or doesn't support geolocation — callers should
+// treat `position` as optional and never block core flows on it.
+export function useLiveLocation() {
+  const [position, setPosition] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setError("Geolocation is not supported by this browser.");
+      return;
+    }
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setError(null);
+      },
+      (err) => {
+        setError(err.message || "Could not get your location.");
+      },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
+    );
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  return { position, error };
+}
+
+// Blue pulsing dot — used for both the persistent "you are here" live marker
+// and the one-shot "use my current location" picker result.
+export const myLocationIcon = L.divIcon({
+  className: "",
+  html: `<div style="position:relative;width:20px;height:20px;">
+    <div style="position:absolute;inset:0;border-radius:50%;background:rgba(59,130,246,0.25);animation:gv-pulse 1.8s ease-out infinite;"></div>
+    <div style="position:absolute;top:4px;left:4px;width:12px;height:12px;border-radius:50%;background:#3B82F6;border:2.5px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35);"></div>
+  </div>`,
+  iconSize: [20, 20],
+  iconAnchor: [10, 10],
+});
 
 // ── Logo (inline SVG — no external assets needed) ────────────────────────────
 export function TrikeIcon({ size = 40, color = C.yellow }) {
