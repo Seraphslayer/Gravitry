@@ -21,8 +21,8 @@ async function nextId(db, name, prefix) {
   return `${prefix}-${String(seq).padStart(3, "0")}`;
 }
 
-// ── Basic brute-force protection ────────────────────────────────────────────
-// Rate-limited per-username (not per-IP — Vercel doesn't reliably expose the
+// --- Basic brute-force protection ---
+// Rate-limited per-username (not per-IP - Vercel doesn't reliably expose the
 // real client IP without extra config, and per-username protection stops a
 // distributed attack against one account regardless of source anyway).
 const MAX_ATTEMPTS = 5;
@@ -60,7 +60,7 @@ export default async function handler(req, res) {
     const { action } = req.query;
     const db = await getDb();
 
-    // POST /api/auth?action=signup — passenger self-service signup only
+    // POST /api/auth?action=signup - passenger self-service signup only
     if (req.method === "POST" && action === "signup") {
       const { username, password, name, phone } = req.body || {};
       if (
@@ -105,14 +105,12 @@ export default async function handler(req, res) {
         passengerId,
       });
       setSessionCookie(res, token);
-      return res
-        .status(201)
-        .json({
-          role: "passenger",
-          id: passengerId,
-          name: doc.name,
-          passengerId,
-        });
+      return res.status(201).json({
+        role: "passenger",
+        id: passengerId,
+        name: doc.name,
+        passengerId,
+      });
     }
 
     if (req.method === "POST" && action === "login") {
@@ -126,11 +124,9 @@ export default async function handler(req, res) {
 
       const { locked, retryAt, key } = await checkLoginLock(db, cleanUsername);
       if (locked) {
-        return res
-          .status(429)
-          .json({
-            error: `Too many failed attempts. Try again after ${new Date(retryAt).toLocaleTimeString()}.`,
-          });
+        return res.status(429).json({
+          error: `Too many failed attempts. Try again after ${new Date(retryAt).toLocaleTimeString()}.`,
+        });
       }
 
       const admin = await db
@@ -147,13 +143,11 @@ export default async function handler(req, res) {
           name: admin.name || admin.username,
         });
         setSessionCookie(res, token);
-        return res
-          .status(200)
-          .json({
-            role: "admin",
-            id: admin._id,
-            name: admin.name || admin.username,
-          });
+        return res.status(200).json({
+          role: "admin",
+          id: admin._id,
+          name: admin.name || admin.username,
+        });
       }
 
       const driver = await db
@@ -171,14 +165,12 @@ export default async function handler(req, res) {
           driverId: driver._id,
         });
         setSessionCookie(res, token);
-        return res
-          .status(200)
-          .json({
-            role: "driver",
-            id: driver._id,
-            name: driver.name,
-            driverId: driver._id,
-          });
+        return res.status(200).json({
+          role: "driver",
+          id: driver._id,
+          name: driver.name,
+          driverId: driver._id,
+        });
       }
 
       const passenger = await db
@@ -196,14 +188,12 @@ export default async function handler(req, res) {
           passengerId: passenger._id,
         });
         setSessionCookie(res, token);
-        return res
-          .status(200)
-          .json({
-            role: "passenger",
-            id: passenger._id,
-            name: passenger.name,
-            passengerId: passenger._id,
-          });
+        return res.status(200).json({
+          role: "passenger",
+          id: passenger._id,
+          name: passenger.name,
+          passengerId: passenger._id,
+        });
       }
 
       await recordLoginFailure(db, key);

@@ -20,7 +20,7 @@ export default async function handler(req, res) {
     const col = db.collection("requests");
     const { id, action, status, origin, passengerId } = req.query;
 
-    // POST /api/requests  — kiosk or passenger app creates a pending ride request
+    // POST /api/requests  - kiosk or passenger app creates a pending ride request
     if (req.method === "POST" && !id) {
       const { origin: o, destination, fare } = req.body || {};
       if (!isNonEmptyString(o) || !isNonEmptyString(destination)) {
@@ -35,7 +35,7 @@ export default async function handler(req, res) {
       }
 
       // Passenger identity is derived from the session, never trusted from the
-      // request body — otherwise anyone could tag a ride with someone else's
+      // request body - otherwise anyone could tag a ride with someone else's
       // passengerId and pollute their ride history. Guests (no session) simply
       // get no passenger fields, same as before.
       const session = getSessionFromReq(req);
@@ -58,15 +58,15 @@ export default async function handler(req, res) {
       return res.status(201).json(doc);
     }
 
-    // GET /api/requests?status=pending&origin=T1&passengerId=P-001  — list/filter
+    // GET /api/requests?status=pending&origin=T1&passengerId=P-001  - list/filter
     if (req.method === "GET" && !id) {
       const filter = {};
       if (status) filter.status = status;
       if (origin) filter.origin = origin;
 
       if (passengerId) {
-        // Ride history is private — only the passenger themself or an admin
-        // may read it. Without this, sequential passenger IDs (P-001, P-002…)
+        // Ride history is private - only the passenger themself or an admin
+        // may read it. Without this, sequential passenger IDs (P-001, P-002...)
         // would let anyone browse anyone else's trip history.
         const session = requireSession(req, res);
         if (!session) return;
@@ -82,7 +82,7 @@ export default async function handler(req, res) {
       return res.status(200).json(docs);
     }
 
-    // GET /api/requests?id=DR-001  — single lookup (used by kiosk/passenger
+    // GET /api/requests?id=DR-001  - single lookup (used by kiosk/passenger
     // waiting screens; intentionally public since the requester may not be
     // logged in, and the safety-record contents are meant to be shown here)
     if (req.method === "GET" && id && !action) {
@@ -93,7 +93,7 @@ export default async function handler(req, res) {
 
     // POST /api/requests?id=DR-001&action=accept
     if (req.method === "POST" && id && action === "accept") {
-      // Only an authenticated driver can accept, and only as themself — the
+      // Only an authenticated driver can accept, and only as themself - the
       // driverId always comes from the session, never the request body, so
       // one driver can't accept a trip "as" another driver.
       const session = requireSession(req, res, ["driver"]);
@@ -138,7 +138,7 @@ export default async function handler(req, res) {
     // POST /api/requests?id=DR-001&action=complete
     if (req.method === "POST" && id && action === "complete") {
       // Only the driver who accepted this specific trip (or an admin) may
-      // mark it complete — otherwise any caller could free up a tricycle
+      // mark it complete - otherwise any caller could free up a tricycle
       // mid-trip or tamper with another driver's dispatch record.
       const session = requireSession(req, res, ["driver", "admin"]);
       if (!session) return;

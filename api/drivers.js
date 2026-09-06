@@ -12,7 +12,7 @@ export default async function handler(req, res) {
     const { id } = req.query;
 
     if (req.method === "GET") {
-      // Never expose passwordHash or login username to the frontend — the
+      // Never expose passwordHash or login username to the frontend - the
       // driver list is read by the kiosk, passenger app, and admin dashboard,
       // none of which need credentials.
       const docs = await col
@@ -26,8 +26,7 @@ export default async function handler(req, res) {
       const session = requireSession(req, res, ["admin"]);
       if (!session) return;
 
-      if (!id)
-        return res.status(400).json({ error: "id query param is required" });
+      if (!id) return res.status(400).json({ error: "id query param is required" });
       const patch = { ...(req.body || {}) };
       for (const field of SENSITIVE_FIELDS) delete patch[field];
 
@@ -36,10 +35,7 @@ export default async function handler(req, res) {
       }
 
       await col.updateOne({ _id: id }, { $set: patch });
-      const doc = await col.findOne(
-        { _id: id },
-        { projection: { passwordHash: 0, username: 0 } },
-      );
+      const doc = await col.findOne({ _id: id }, { projection: { passwordHash: 0, username: 0 } });
       return res.status(200).json(doc);
     }
 
