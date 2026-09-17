@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Truck, Star } from "lucide-react";
+import { Truck, Star, Wifi } from "lucide-react";
 import {
   C,
   GR,
@@ -12,6 +12,7 @@ import {
 } from "./shared.jsx";
 import {
   getDrivers,
+  updateDriver,
   getTricycles,
   getFares,
   updateFare,
@@ -46,8 +47,8 @@ function Badge({ children, variant = "gray" }) {
 }
 function statusBadge(s) {
   const m = {
-    available: ["green", "● Available"],
-    on_trip: ["blue", "● On Trip"],
+    available: ["green", "\u25CF Available"],
+    on_trip: ["blue", "\u25CF On Trip"],
     off_duty: ["gray", "Off Duty"],
   };
   const [v, label] = m[s] || ["gray", s];
@@ -89,7 +90,89 @@ function DocBadge({ label, status }) {
   );
 }
 
-function DriversTab({ drivers, loading }) {
+function NfcCell({ driver, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(driver.nfcId || "");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await updateDriver(driver._id, { nfcId: val.trim() || null });
+      onSaved();
+    } catch {
+      /* keep old value shown on failure */
+    }
+    setSaving(false);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <input
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          placeholder="Card UID"
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") setEditing(false);
+          }}
+          style={{
+            width: 110,
+            padding: "4px 7px",
+            border: `1.5px solid ${C.green}`,
+            borderRadius: 6,
+            fontFamily: "monospace",
+            fontSize: 11,
+            outline: "none",
+          }}
+        />
+        <button
+          onClick={save}
+          disabled={saving}
+          style={{
+            background: C.green,
+            color: "#fff",
+            border: "none",
+            borderRadius: 5,
+            padding: "4px 8px",
+            cursor: "pointer",
+            fontSize: 11,
+          }}
+        >
+          {saving ? "..." : "\u2713"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setEditing(true)}
+      style={{
+        background: driver.nfcId ? "#ECFDF5" : C.surface,
+        border: "none",
+        borderRadius: 8,
+        padding: "5px 10px",
+        fontFamily: driver.nfcId ? "monospace" : IN,
+        fontWeight: driver.nfcId ? 700 : 500,
+        fontSize: driver.nfcId ? 11.5 : 11,
+        color: driver.nfcId ? C.greenDark : C.muted,
+        cursor: "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+      }}
+    >
+      <Wifi size={11} />
+      {driver.nfcId || "Link a card"}
+    </button>
+  );
+}
+
+function DriversTab({ drivers, loading, onRefresh }) {
   return (
     <div
       style={{
@@ -123,6 +206,7 @@ function DriversTab({ drivers, loading }) {
               "Assigned Unit",
               "Rating",
               "Documents",
+              "NFC Card",
               "Status",
             ].map((h) => (
               <th
@@ -146,7 +230,7 @@ function DriversTab({ drivers, loading }) {
           {loading && (
             <tr>
               <td
-                colSpan={7}
+                colSpan={8}
                 style={{
                   padding: 24,
                   textAlign: "center",
@@ -155,7 +239,7 @@ function DriversTab({ drivers, loading }) {
                   fontSize: 13,
                 }}
               >
-                Loading…
+                Loading...
               </td>
             </tr>
           )}
@@ -272,6 +356,9 @@ function DriversTab({ drivers, loading }) {
                     status={getDocStatus(d.franchiseExpiry)}
                   />
                 </td>
+                <td data-label="NFC Card" style={{ padding: "12px 16px" }}>
+                  <NfcCell driver={d} onSaved={onRefresh} />
+                </td>
                 <td data-label="Status" style={{ padding: "12px 16px" }}>
                   {statusBadge(d.status)}
                 </td>
@@ -343,7 +430,7 @@ function TricyclesTab({ tricycles, loading }) {
                   fontSize: 13,
                 }}
               >
-                Loading…
+                Loading...
               </td>
             </tr>
           )}
@@ -417,7 +504,7 @@ function TricyclesTab({ tricycles, loading }) {
                     color: t.terminal ? C.text : C.muted,
                   }}
                 >
-                  {t.terminal ? getTerm(t.terminal)?.short : "—"}
+                  {t.terminal ? getTerm(t.terminal)?.short : "-"}
                 </td>
                 <td data-label="Status" style={{ padding: "12px 16px" }}>
                   {statusBadge(t.status)}
@@ -502,7 +589,7 @@ function FaresTab({ fares, loading, onUpdated }) {
                 padding: 20,
               }}
             >
-              Loading…
+              Loading...
             </p>
           ) : (
             <table style={{ borderCollapse: "collapse" }}>
@@ -568,7 +655,7 @@ function FaresTab({ fares, loading, onUpdated }) {
                         >
                           {same ? (
                             <span style={{ color: C.border, fontSize: 14 }}>
-                              —
+                              -
                             </span>
                           ) : isEdit ? (
                             <div
@@ -611,7 +698,7 @@ function FaresTab({ fares, loading, onUpdated }) {
                                   fontSize: 11,
                                 }}
                               >
-                                ✓
+                                {"\u2713"}
                               </button>
                             </div>
                           ) : (
@@ -633,7 +720,8 @@ function FaresTab({ fares, loading, onUpdated }) {
                                 minWidth: 46,
                               }}
                             >
-                              ₱{fares[key] ?? "—"}
+                              {"\u20B1"}
+                              {fares[key] ?? "-"}
                             </button>
                           )}
                         </td>
@@ -647,8 +735,8 @@ function FaresTab({ fares, loading, onUpdated }) {
         </div>
       </div>
       <p style={{ fontSize: 11.5, color: C.muted, fontFamily: IN, margin: 0 }}>
-        ℹ️ Fare edits are versioned in the database — previous rates are kept in
-        a history log.
+        Fare edits are versioned in the database - previous rates are kept in a
+        history log.
       </p>
     </div>
   );
@@ -675,7 +763,7 @@ function LogTab({ logs, loading }) {
             color: C.text,
           }}
         >
-          Dispatch Log — Audit Trail
+          Dispatch Log - Audit Trail
         </span>
       </div>
       <table className="responsive-table">
@@ -714,7 +802,7 @@ function LogTab({ logs, loading }) {
                   fontSize: 13,
                 }}
               >
-                Loading…
+                Loading...
               </td>
             </tr>
           )}
@@ -764,12 +852,12 @@ function LogTab({ logs, loading }) {
                     fontWeight: 600,
                   }}
                 >
-                  {getTerm(log.origin)?.short} →{" "}
+                  {getTerm(log.origin)?.short} {"\u2192"}{" "}
                   {getTerm(log.destination)?.short}
                 </td>
                 <td data-label="Driver" style={{ padding: "11px 16px" }}>
                   <div style={{ fontFamily: IN, fontSize: 12, color: C.text }}>
-                    {log.driver || "—"}
+                    {log.driver || "-"}
                   </div>
                   <div
                     style={{
@@ -778,7 +866,7 @@ function LogTab({ logs, loading }) {
                       color: C.muted,
                     }}
                   >
-                    {log.unit || ""} {log.plate ? `· ${log.plate}` : ""}
+                    {log.unit || ""} {log.plate ? `. ${log.plate}` : ""}
                   </div>
                 </td>
                 <td
@@ -791,7 +879,8 @@ function LogTab({ logs, loading }) {
                     color: C.green,
                   }}
                 >
-                  ₱{log.fare}.00
+                  {"\u20B1"}
+                  {log.fare}.00
                 </td>
                 <td
                   data-label="Time"
@@ -877,9 +966,7 @@ export default function AdminView() {
   ];
 
   return (
-    <div
-      style={{ minHeight: "100%", background: C.surface, overflowY: "auto" }}
-    >
+    <div style={{ height: "100%", background: C.surface, overflowY: "auto" }}>
       <div
         style={{
           background: C.navy,
@@ -1014,7 +1101,7 @@ export default function AdminView() {
         </div>
 
         {tab === "drivers" && (
-          <DriversTab drivers={drivers} loading={loading} />
+          <DriversTab drivers={drivers} loading={loading} onRefresh={loadAll} />
         )}
         {tab === "tricycles" && (
           <TricyclesTab tricycles={tricycles} loading={loading} />

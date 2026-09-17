@@ -21,6 +21,8 @@ import {
   X,
   Crosshair,
   Settings,
+  Minimize2,
+  Maximize2,
 } from "lucide-react";
 import {
   C,
@@ -73,6 +75,19 @@ function MapClickCatcher({ active, onPick }) {
       if (active) onPick(e.latlng.lat, e.latlng.lng);
     },
   });
+  return null;
+}
+// Leaflet computes tile layout based on its container's size at mount time.
+// When the map-zone is collapsed to 0 height and later restored, the map
+// needs to be told to recalculate its size, or tiles render blank/offset.
+function MapVisibilitySync({ visible }) {
+  const map = useMap();
+  useEffect(() => {
+    if (visible) {
+      const t = setTimeout(() => map.invalidateSize(), 260);
+      return () => clearTimeout(t);
+    }
+  }, [visible, map]);
   return null;
 }
 
@@ -131,6 +146,7 @@ export default function KioskView() {
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [mapVisible, setMapVisible] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -204,7 +220,9 @@ export default function KioskView() {
 
   const useMyLocation = () => {
     if (!navigator.geolocation) {
-      setLocationError("This device doesn't support location access. Try search or drop a pin instead.");
+      setLocationError(
+        "This device doesn't support location access. Try search or drop a pin instead.",
+      );
       return;
     }
     setLocating(true);
@@ -217,14 +235,20 @@ export default function KioskView() {
       (err) => {
         setLocating(false);
         if (err.code === err.PERMISSION_DENIED) {
-          setLocationError("Location access was denied. Try search or drop a pin instead.");
+          setLocationError(
+            "Location access was denied. Try search or drop a pin instead.",
+          );
         } else if (err.code === err.TIMEOUT) {
-          setLocationError("Location took too long to find. Try again, or search/drop a pin instead.");
+          setLocationError(
+            "Location took too long to find. Try again, or search/drop a pin instead.",
+          );
         } else {
-          setLocationError("Couldn't get location. Try search or drop a pin instead.");
+          setLocationError(
+            "Couldn't get location. Try search or drop a pin instead.",
+          );
         }
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
     );
   };
 
@@ -266,7 +290,121 @@ export default function KioskView() {
 
   return (
     <div className="kiosk-shell">
-      <div className="kiosk-map-zone">
+      <div
+        style={{
+          position: "absolute",
+          top: "calc(12px + var(--safe-top))",
+          left: 12,
+          zIndex: 600,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          background: "rgba(11,45,72,0.92)",
+          backdropFilter: "blur(6px)",
+          padding: "8px 14px",
+          borderRadius: 30,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+        }}
+      >
+        <TrikeIcon size={18} color={C.yellow} />
+        <span
+          style={{
+            color: "#fff",
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
+          GRAVITRY
+        </span>
+      </div>
+
+      <div
+        style={{
+          position: "absolute",
+          top: "calc(12px + var(--safe-top))",
+          right: 12,
+          zIndex: 600,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "rgba(255,255,255,0.95)",
+          padding: "7px 12px",
+          borderRadius: 20,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+        }}
+      >
+        <div
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: C.green,
+          }}
+        />
+        <span
+          style={{
+            fontFamily: GR,
+            fontWeight: 600,
+            fontSize: 11,
+            color: C.text,
+          }}
+          className="hide-xs"
+        >
+          {originTerm.short}
+        </span>
+      </div>
+
+      <button
+        onClick={() => setShowSettings(true)}
+        style={{
+          position: "absolute",
+          top: "calc(60px + var(--safe-top))",
+          right: 12,
+          zIndex: 600,
+          width: 38,
+          height: 38,
+          borderRadius: "50%",
+          background: "rgba(255,255,255,0.95)",
+          border: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+          cursor: "pointer",
+        }}
+      >
+        <Settings size={17} color={C.navy} />
+      </button>
+
+      <button
+        onClick={() => setMapVisible((v) => !v)}
+        title={mapVisible ? "Minimize map" : "Show map"}
+        style={{
+          position: "absolute",
+          top: "calc(108px + var(--safe-top))",
+          right: 12,
+          zIndex: 600,
+          width: 38,
+          height: 38,
+          borderRadius: "50%",
+          background: "rgba(255,255,255,0.95)",
+          border: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+          cursor: "pointer",
+        }}
+      >
+        {mapVisible ? (
+          <Minimize2 size={16} color={C.navy} />
+        ) : (
+          <Maximize2 size={16} color={C.navy} />
+        )}
+      </button>
+
+      <div className={`kiosk-map-zone${mapVisible ? "" : " map-hidden"}`}>
         <MapContainer
           center={COMPLEX_CENTER}
           zoom={16}
@@ -277,6 +415,7 @@ export default function KioskView() {
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
           <FlyToTerminal target={flyTarget} />
           <MapClickCatcher active={pinMode} onPick={pickLocation} />
+          <MapVisibilitySync visible={mapVisible} />
           {droppedPin && (
             <Marker
               position={[droppedPin.lat, droppedPin.lng]}
@@ -284,7 +423,10 @@ export default function KioskView() {
             />
           )}
           {myPosition && (
-            <Marker position={[myPosition.lat, myPosition.lng]} icon={myLocationIcon}>
+            <Marker
+              position={[myPosition.lat, myPosition.lng]}
+              icon={myLocationIcon}
+            >
               <Popup>You are here</Popup>
             </Marker>
           )}
@@ -298,93 +440,6 @@ export default function KioskView() {
             </Marker>
           ))}
         </MapContainer>
-
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(12px + var(--safe-top))",
-            left: 12,
-            zIndex: 400,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            background: "rgba(11,45,72,0.92)",
-            backdropFilter: "blur(6px)",
-            padding: "8px 14px",
-            borderRadius: 30,
-            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-          }}
-        >
-          <TrikeIcon size={18} color={C.yellow} />
-          <span
-            style={{
-              color: "#fff",
-              fontFamily: GR,
-              fontWeight: 700,
-              fontSize: 13,
-            }}
-          >
-            GRAVITRY
-          </span>
-        </div>
-
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(12px + var(--safe-top))",
-            right: 12,
-            zIndex: 400,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: "rgba(255,255,255,0.95)",
-            padding: "7px 12px",
-            borderRadius: 20,
-            boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-          }}
-        >
-          <div
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: C.green,
-            }}
-          />
-          <span
-            style={{
-              fontFamily: GR,
-              fontWeight: 600,
-              fontSize: 11,
-              color: C.text,
-            }}
-            className="hide-xs"
-          >
-            {originTerm.short}
-          </span>
-        </div>
-
-        <button
-          onClick={() => setShowSettings(true)}
-          style={{
-            position: "absolute",
-            top: "calc(60px + var(--safe-top))",
-            right: 12,
-            zIndex: 400,
-            width: 38,
-            height: 38,
-            borderRadius: "50%",
-            background: "rgba(255,255,255,0.95)",
-            border: "none",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-            cursor: "pointer",
-          }}
-        >
-          <Settings size={17} color={C.navy} />
-        </button>
 
         {pinMode && (
           <div
@@ -429,7 +484,7 @@ export default function KioskView() {
         )}
       </div>
 
-      <div className="bottom-sheet">
+      <div className={`bottom-sheet${mapVisible ? "" : " sheet-full"}`}>
         <div className="sheet-handle" />
 
         {error && step !== "waiting" && (
@@ -771,7 +826,10 @@ export default function KioskView() {
                     marginBottom: 6,
                   }}
                 >
-                  {isGeo ? "Nearest terminal to your location" : "Nearest terminal to your pin"} ({snap.distanceMeters}m away):
+                  {isGeo
+                    ? "Nearest terminal to your location"
+                    : "Nearest terminal to your pin"}{" "}
+                  ({snap.distanceMeters}m away):
                 </div>
                 <div
                   style={{

@@ -27,6 +27,8 @@ import {
   X,
   Search,
   Crosshair,
+  Minimize2,
+  Maximize2,
 } from "lucide-react";
 import {
   C,
@@ -81,6 +83,19 @@ function MapClickCatcher({ active, onPick }) {
       if (active) onPick(e.latlng.lat, e.latlng.lng);
     },
   });
+  return null;
+}
+// Leaflet computes tile layout based on its container's size at mount time.
+// When the map-zone is collapsed to 0 height and later restored, the map
+// needs to be told to recalculate its size, or tiles render blank/offset.
+function MapVisibilitySync({ visible }) {
+  const map = useMap();
+  useEffect(() => {
+    if (visible) {
+      const t = setTimeout(() => map.invalidateSize(), 260);
+      return () => clearTimeout(t);
+    }
+  }, [visible, map]);
   return null;
 }
 
@@ -1120,6 +1135,7 @@ export default function PassengerApp() {
   const [guestMode, setGuestMode] = useState(false);
   const [tab, setTab] = useState("ride"); // ride | history
   const [authMode, setAuthMode] = useState(null); // null | "login" | "signup"
+  const [mapVisible, setMapVisible] = useState(true);
 
   const [flowStep, setFlowStep] = useState("origin"); // origin | destination | fare | waiting | success
   const [origin, setOrigin] = useState(null);
@@ -1233,7 +1249,119 @@ export default function PassengerApp() {
 
   return (
     <div className="kiosk-shell">
-      <div className="kiosk-map-zone">
+      <div
+        style={{
+          position: "absolute",
+          top: "calc(12px + var(--safe-top))",
+          left: 12,
+          zIndex: 600,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          background: "rgba(11,45,72,0.92)",
+          backdropFilter: "blur(6px)",
+          padding: "8px 14px",
+          borderRadius: 30,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+        }}
+      >
+        <TrikeIcon size={18} color={C.yellow} />
+        <span
+          style={{
+            color: "#fff",
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 13,
+          }}
+        >
+          GRAVITRY
+        </span>
+      </div>
+
+      <div
+        style={{
+          position: "absolute",
+          top: "calc(12px + var(--safe-top))",
+          right: 60,
+          zIndex: 600,
+        }}
+      >
+        {isPassenger ? (
+          <button
+            onClick={handleLogout}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "rgba(255,255,255,0.95)",
+              border: "none",
+              borderRadius: 20,
+              padding: "7px 12px",
+              cursor: "pointer",
+              boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+            }}
+          >
+            <span
+              style={{
+                color: C.text,
+                fontFamily: GR,
+                fontSize: 11.5,
+                fontWeight: 600,
+              }}
+            >
+              {user.name}
+            </span>
+            <LogOut size={13} color={C.muted} />
+          </button>
+        ) : guestMode ? (
+          <button
+            onClick={() => setAuthMode("login")}
+            style={{
+              background: C.yellow,
+              border: "none",
+              borderRadius: 20,
+              padding: "7px 14px",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 11.5,
+              color: C.navy,
+              cursor: "pointer",
+              boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+            }}
+          >
+            Log In
+          </button>
+        ) : null}
+      </div>
+
+      <button
+        onClick={() => setMapVisible((v) => !v)}
+        title={mapVisible ? "Minimize map" : "Show map"}
+        style={{
+          position: "absolute",
+          top: "calc(12px + var(--safe-top))",
+          right: 12,
+          zIndex: 600,
+          width: 38,
+          height: 38,
+          borderRadius: "50%",
+          background: "rgba(255,255,255,0.95)",
+          border: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+          cursor: "pointer",
+        }}
+      >
+        {mapVisible ? (
+          <Minimize2 size={16} color={C.navy} />
+        ) : (
+          <Maximize2 size={16} color={C.navy} />
+        )}
+      </button>
+
+      <div className={`kiosk-map-zone${mapVisible ? "" : " map-hidden"}`}>
         <MapContainer
           center={COMPLEX_CENTER}
           zoom={16}
@@ -1247,6 +1375,7 @@ export default function PassengerApp() {
             active={inLocationStep && pinState.pinMode}
             onPick={(lat, lng) => pinState.onMapPick?.(lat, lng)}
           />
+          <MapVisibilitySync visible={mapVisible} />
           {inLocationStep && pinState.droppedPin && (
             <Marker
               position={[pinState.droppedPin.lat, pinState.droppedPin.lng]}
@@ -1275,94 +1404,9 @@ export default function PassengerApp() {
             </Marker>
           ))}
         </MapContainer>
-
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(12px + var(--safe-top))",
-            left: 12,
-            zIndex: 400,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            background: "rgba(11,45,72,0.92)",
-            backdropFilter: "blur(6px)",
-            padding: "8px 14px",
-            borderRadius: 30,
-            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
-          }}
-        >
-          <TrikeIcon size={18} color={C.yellow} />
-          <span
-            style={{
-              color: "#fff",
-              fontFamily: GR,
-              fontWeight: 700,
-              fontSize: 13,
-            }}
-          >
-            GRAVITRY
-          </span>
-        </div>
-
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(12px + var(--safe-top))",
-            right: 12,
-            zIndex: 400,
-          }}
-        >
-          {isPassenger ? (
-            <button
-              onClick={handleLogout}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                background: "rgba(255,255,255,0.95)",
-                border: "none",
-                borderRadius: 20,
-                padding: "7px 12px",
-                cursor: "pointer",
-                boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-              }}
-            >
-              <span
-                style={{
-                  color: C.text,
-                  fontFamily: GR,
-                  fontSize: 11.5,
-                  fontWeight: 600,
-                }}
-              >
-                {user.name}
-              </span>
-              <LogOut size={13} color={C.muted} />
-            </button>
-          ) : guestMode ? (
-            <button
-              onClick={() => setAuthMode("login")}
-              style={{
-                background: C.yellow,
-                border: "none",
-                borderRadius: 20,
-                padding: "7px 14px",
-                fontFamily: GR,
-                fontWeight: 700,
-                fontSize: 11.5,
-                color: C.navy,
-                cursor: "pointer",
-                boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-              }}
-            >
-              Log In
-            </button>
-          ) : null}
-        </div>
       </div>
 
-      <div className="bottom-sheet">
+      <div className={`bottom-sheet${mapVisible ? "" : " sheet-full"}`}>
         <div className="sheet-handle" />
 
         {error && flowStep !== "waiting" && (
