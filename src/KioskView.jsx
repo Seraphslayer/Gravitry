@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -37,7 +37,12 @@ import {
   useLiveLocation,
   myLocationIcon,
 } from "./shared.jsx";
-import { getFares, createRequest, getRequestById } from "./api.js";
+import {
+  getFares,
+  createRequest,
+  getRequestById,
+  acceptViaNfc,
+} from "./api.js";
 
 function makeDivIcon(color, pulse = false) {
   return L.divIcon({
@@ -149,6 +154,14 @@ export default function KioskView() {
   const [mapVisible, setMapVisible] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [nfcNotice, setNfcNotice] = useState(null); // { type: "success" | "error", text }
+
+  // NFC keystroke-capture bookkeeping. The reader emulates a keyboard, so we
+  // distinguish a card tap from a real human keypress by typing speed - the
+  // reader sends characters far faster than anyone could type by hand.
+  const scanBufferRef = useRef("");
+  const lastKeyTimeRef = useRef(0);
+  const lastAcceptedRef = useRef({ id: null, time: 0 });
 
   // Persistent "you are here" GPS dot — always visible on the map when available.
   // Separate from the one-shot "Use My Current Location" picker below.
@@ -165,6 +178,87 @@ export default function KioskView() {
       .then(setFares)
       .catch(() => setError("Could not load fares. Check your connection."));
   }, []);
+
+  // NFC card-tap capture. The reader is a keyboard-emulation USB device: it
+  // "types" the card's digits and an Enter, extremely fast (much faster than
+  // a human). We only treat a burst as a tap when the inter-key timing is
+  // fast throughout - anything at normal typing speed is left completely
+  // alone (e.g. the destination search box below still works normally).
+  useEffect(() => {
+    const FAST_THRESHOLD_MS = 50;
+    const MIN_DIGITS = 6;
+    const MAX_DIGITS = 20;
+    const DEBOUNCE_MS = 5000;
+
+    const handleKeyDown = (e) => {
+      const now = performance.now();
+      const delta = now - lastKeyTimeRef.current;
+      lastKeyTimeRef.current = now;
+      const isDigit = e.key.length === 1 && e.key >= "0" && e.key <= "9";
+
+      if (isDigit) {
+        if (delta < FAST_THRESHOLD_MS && scanBufferRef.current.length > 0) {
+          // Continuing a fast burst - almost certainly the reader, not a
+          // person. Swallow the keystroke so it never lands in a focused
+          // input, and keep collecting it.
+          e.preventDefault();
+          scanBufferRef.current += e.key;
+        } else {
+          // Either the very first character of a possible burst, or a slow
+          // (human) keypress. We can't yet tell which - start a fresh
+          // buffer but don't intercept the keystroke itself.
+          scanBufferRef.current = e.key;
+        }
+        return;
+      }
+
+      if (e.key === "Enter") {
+        const buffered = scanBufferRef.current;
+        scanBufferRef.current = "";
+        if (
+          buffered.length >= MIN_DIGITS &&
+          buffered.length <= MAX_DIGITS &&
+          delta < FAST_THRESHOLD_MS
+        ) {
+          e.preventDefault();
+          handleNfcTap(buffered);
+        }
+        return;
+      }
+
+      // Any other key breaks a burst in progress.
+      scanBufferRef.current = "";
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleNfcTap = async (nfcId) => {
+    const now = Date.now();
+    if (
+      lastAcceptedRef.current.id === nfcId &&
+      now - lastAcceptedRef.current.time < 5000
+    ) {
+      return; // same card still sitting near the reader - ignore repeat reads
+    }
+    lastAcceptedRef.current = { id: nfcId, time: now };
+    try {
+      const doc = await acceptViaNfc(nfcId, KIOSK);
+      setNfcNotice({
+        type: "success",
+        text: `Driver ${doc.driver} accepted a trip to ${getTerm(doc.destination)?.short}`,
+      });
+    } catch (err) {
+      setNfcNotice({
+        type: "error",
+        text:
+          err.message?.replace(/^API .* failed: /, "") || "Card not recognized",
+      });
+    }
+    setTimeout(() => setNfcNotice(null), 4000);
+  };
 
   // Poll for driver acceptance while waiting
   useEffect(() => {
@@ -403,6 +497,30 @@ export default function KioskView() {
           <Maximize2 size={16} color={C.navy} />
         )}
       </button>
+
+      {nfcNotice && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(12px + var(--safe-top))",
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 700,
+            background: nfcNotice.type === "success" ? C.green : C.danger,
+            color: "#fff",
+            padding: "10px 18px",
+            borderRadius: 12,
+            fontFamily: GR,
+            fontWeight: 600,
+            fontSize: 12.5,
+            boxShadow: "0 6px 20px rgba(0,0,0,0.3)",
+            maxWidth: "calc(100% - 24px)",
+            textAlign: "center",
+          }}
+        >
+          {nfcNotice.text}
+        </div>
+      )}
 
       <div className={`kiosk-map-zone${mapVisible ? "" : " map-hidden"}`}>
         <MapContainer
