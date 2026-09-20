@@ -17,7 +17,7 @@ async function req(path, options = {}) {
   return res.json();
 }
 
-// ── Auth ──────────────────────────────────────────────────────────────────
+// -- Auth ---------------------------------------------------------------
 export const login = (username, password) =>
   req("auth?action=login", {
     method: "POST",
@@ -34,7 +34,7 @@ export const logout = () => req("auth?action=logout", { method: "POST" });
 
 export const getMe = () => req("auth?action=me");
 
-// ── Fares ─────────────────────────────────────────────────────────────────
+// -- Fares ----------------------------------------------------------------
 export const getFares = () => req("fares");
 export const updateFare = (origin, destination, fare) =>
   req("fares", {
@@ -42,7 +42,7 @@ export const updateFare = (origin, destination, fare) =>
     body: JSON.stringify({ origin, destination, fare }),
   });
 
-// ── Drivers ───────────────────────────────────────────────────────────────
+// -- Drivers ----------------------------------------------------------------
 export const getDrivers = () => req("drivers");
 export const updateDriver = (id, patch) =>
   req(`drivers?id=${encodeURIComponent(id)}`, {
@@ -50,11 +50,11 @@ export const updateDriver = (id, patch) =>
     body: JSON.stringify(patch),
   });
 
-// ── Tricycles ─────────────────────────────────────────────────────────────
+// -- Tricycles ----------------------------------------------------------------
 export const getTricycles = () => req("tricycles");
 
-// ── Dispatch requests ─────────────────────────────────────────────────────
-// passenger is optional: { id, name } — attaches identity for logged-in passengers
+// -- Dispatch requests ----------------------------------------------------------------
+// passenger is optional: { id, name } - attaches identity for logged-in passengers
 export const createRequest = (origin, destination, fare, passenger) =>
   req("requests", {
     method: "POST",
@@ -85,4 +85,13 @@ export const acceptRequest = (id, driverId) =>
 export const completeRequest = (id) =>
   req(`requests?id=${encodeURIComponent(id)}&action=complete`, {
     method: "POST",
+  });
+
+// NFC card tap (keyboard-emulation reader at a physical terminal). No key
+// header - see api/requests.js for how this endpoint protects itself
+// without a secret the browser could leak.
+export const acceptViaNfc = (nfcId, origin) =>
+  req("requests?action=nfc-accept", {
+    method: "POST",
+    body: JSON.stringify({ nfcId, origin }),
   });
