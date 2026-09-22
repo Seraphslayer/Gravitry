@@ -23,6 +23,7 @@ import {
   Settings,
   Minimize2,
   Maximize2,
+  Users,
 } from "lucide-react";
 import {
   C,
@@ -37,12 +38,7 @@ import {
   useLiveLocation,
   myLocationIcon,
 } from "./shared.jsx";
-import {
-  getFares,
-  createRequest,
-  getRequestById,
-  acceptViaNfc,
-} from "./api.js";
+import { getFares, createRequest, getRequestById, getRequests, acceptViaNfc } from "./api.js";
 
 function makeDivIcon(color, pulse = false) {
   return L.divIcon({
@@ -155,6 +151,8 @@ export default function KioskView() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [nfcNotice, setNfcNotice] = useState(null); // { type: "success" | "error", text }
+  const [pendingQueue, setPendingQueue] = useState([]);
+  const [showQueue, setShowQueue] = useState(false);
 
   // NFC keystroke-capture bookkeeping. The reader emulates a keyboard, so we
   // distinguish a card tap from a real human keypress by typing speed - the
@@ -177,6 +175,28 @@ export default function KioskView() {
     getFares()
       .then(setFares)
       .catch(() => setError("Could not load fares. Check your connection."));
+  }, []);
+
+  // Poll the pending queue for this terminal, so drivers standing at the
+  // kiosk (or anyone checking) can see who's waiting - independent of
+  // whether a passenger is mid-booking on this same screen right now.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const list = await getRequests({ status: "pending", origin: KIOSK });
+        if (!cancelled) setPendingQueue(list.slice().reverse()); // oldest first
+      } catch {
+        /* keep last known list */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // NFC card-tap capture. The reader is a keyboard-emulation USB device: it
@@ -215,11 +235,7 @@ export default function KioskView() {
       if (e.key === "Enter") {
         const buffered = scanBufferRef.current;
         scanBufferRef.current = "";
-        if (
-          buffered.length >= MIN_DIGITS &&
-          buffered.length <= MAX_DIGITS &&
-          delta < FAST_THRESHOLD_MS
-        ) {
+        if (buffered.length >= MIN_DIGITS && buffered.length <= MAX_DIGITS && delta < FAST_THRESHOLD_MS) {
           e.preventDefault();
           handleNfcTap(buffered);
         }
@@ -237,25 +253,15 @@ export default function KioskView() {
 
   const handleNfcTap = async (nfcId) => {
     const now = Date.now();
-    if (
-      lastAcceptedRef.current.id === nfcId &&
-      now - lastAcceptedRef.current.time < 5000
-    ) {
+    if (lastAcceptedRef.current.id === nfcId && now - lastAcceptedRef.current.time < 5000) {
       return; // same card still sitting near the reader - ignore repeat reads
     }
     lastAcceptedRef.current = { id: nfcId, time: now };
     try {
       const doc = await acceptViaNfc(nfcId, KIOSK);
-      setNfcNotice({
-        type: "success",
-        text: `Driver ${doc.driver} accepted a trip to ${getTerm(doc.destination)?.short}`,
-      });
+      setNfcNotice({ type: "success", text: `Driver ${doc.driver} accepted a trip to ${getTerm(doc.destination)?.short}` });
     } catch (err) {
-      setNfcNotice({
-        type: "error",
-        text:
-          err.message?.replace(/^API .* failed: /, "") || "Card not recognized",
-      });
+      setNfcNotice({ type: "error", text: err.message?.replace(/^API .* failed: /, "") || "Card not recognized" });
     }
     setTimeout(() => setNfcNotice(null), 4000);
   };
@@ -314,9 +320,7 @@ export default function KioskView() {
 
   const useMyLocation = () => {
     if (!navigator.geolocation) {
-      setLocationError(
-        "This device doesn't support location access. Try search or drop a pin instead.",
-      );
+      setLocationError("This device doesn't support location access. Try search or drop a pin instead.");
       return;
     }
     setLocating(true);
@@ -329,20 +333,14 @@ export default function KioskView() {
       (err) => {
         setLocating(false);
         if (err.code === err.PERMISSION_DENIED) {
-          setLocationError(
-            "Location access was denied. Try search or drop a pin instead.",
-          );
+          setLocationError("Location access was denied. Try search or drop a pin instead.");
         } else if (err.code === err.TIMEOUT) {
-          setLocationError(
-            "Location took too long to find. Try again, or search/drop a pin instead.",
-          );
+          setLocationError("Location took too long to find. Try again, or search/drop a pin instead.");
         } else {
-          setLocationError(
-            "Couldn't get location. Try search or drop a pin instead.",
-          );
+          setLocationError("Couldn't get location. Try search or drop a pin instead.");
         }
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   };
 
@@ -498,6 +496,52 @@ export default function KioskView() {
         )}
       </button>
 
+      <button
+        onClick={() => setShowQueue(true)}
+        title="See who's waiting"
+        style={{
+          position: "absolute",
+          top: "calc(156px + var(--safe-top))",
+          right: 12,
+          zIndex: 600,
+          width: 38,
+          height: 38,
+          borderRadius: "50%",
+          background: "rgba(255,255,255,0.95)",
+          border: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+          cursor: "pointer",
+        }}
+      >
+        <Users size={16} color={C.navy} />
+        {pendingQueue.length > 0 && (
+          <span
+            style={{
+              position: "absolute",
+              top: -4,
+              right: -4,
+              background: C.danger,
+              color: "#fff",
+              borderRadius: 10,
+              fontSize: 10,
+              fontWeight: 700,
+              minWidth: 16,
+              height: 16,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "0 3px",
+              fontFamily: GR,
+            }}
+          >
+            {pendingQueue.length}
+          </span>
+        )}
+      </button>
+
       {nfcNotice && (
         <div
           style={{
@@ -541,10 +585,7 @@ export default function KioskView() {
             />
           )}
           {myPosition && (
-            <Marker
-              position={[myPosition.lat, myPosition.lng]}
-              icon={myLocationIcon}
-            >
+            <Marker position={[myPosition.lat, myPosition.lng]} icon={myLocationIcon}>
               <Popup>You are here</Popup>
             </Marker>
           )}
@@ -944,10 +985,7 @@ export default function KioskView() {
                     marginBottom: 6,
                   }}
                 >
-                  {isGeo
-                    ? "Nearest terminal to your location"
-                    : "Nearest terminal to your pin"}{" "}
-                  ({snap.distanceMeters}m away):
+                  {isGeo ? "Nearest terminal to your location" : "Nearest terminal to your pin"} ({snap.distanceMeters}m away):
                 </div>
                 <div
                   style={{
@@ -1617,6 +1655,149 @@ export default function KioskView() {
                 </span>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showQueue && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "center",
+            zIndex: 2000,
+          }}
+          onClick={() => setShowQueue(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              borderRadius: "20px 20px 0 0",
+              width: "100%",
+              maxWidth: 480,
+              padding: "18px 20px calc(20px + var(--safe-bottom))",
+              maxHeight: "70vh",
+              overflowY: "auto",
+            }}
+          >
+            <div className="sheet-handle" />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 16,
+              }}
+            >
+              <h3
+                style={{
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: 16,
+                  color: C.text,
+                  margin: 0,
+                }}
+              >
+                Waiting at {originTerm.short}
+              </h3>
+              <button
+                onClick={() => setShowQueue(false)}
+                style={{
+                  background: C.surface,
+                  border: "none",
+                  borderRadius: 8,
+                  width: 30,
+                  height: 30,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+              >
+                <X size={15} color={C.muted} />
+              </button>
+            </div>
+
+            {pendingQueue.length === 0 ? (
+              <p
+                style={{
+                  fontFamily: IN,
+                  fontSize: 13,
+                  color: C.muted,
+                  textAlign: "center",
+                  padding: "20px 0",
+                }}
+              >
+                No one waiting right now.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {pendingQueue.map((r, i) => {
+                  const wait = Math.round((Date.now() - new Date(r.ts).getTime()) / 60000);
+                  return (
+                    <div
+                      key={r._id}
+                      style={{
+                        background: i === 0 ? C.greenLight : C.surface,
+                        borderRadius: 12,
+                        padding: "12px 14px",
+                        border: `1px solid ${i === 0 ? C.green : C.border}`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <span style={{ fontFamily: GR, fontWeight: 700, fontSize: 13, color: C.text }}>
+                          {getTerm(r.destination)?.name}
+                        </span>
+                        <span style={{ fontFamily: GR, fontWeight: 700, fontSize: 13, color: C.green }}>
+                          {"\u20B1"}{r.fare}.00
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontFamily: IN, fontSize: 11, color: C.muted }}>
+                          {wait <= 0 ? "Just now" : `${wait}m waiting`}
+                        </span>
+                        {i === 0 && (
+                          <span
+                            style={{
+                              fontFamily: GR,
+                              fontWeight: 700,
+                              fontSize: 10.5,
+                              color: C.greenDark,
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            Next up
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <p
+              style={{
+                fontSize: 11,
+                color: C.muted,
+                fontFamily: IN,
+                margin: "14px 0 0",
+                textAlign: "center",
+              }}
+            >
+              Drivers: tap your card on the reader to accept the next waiting passenger.
+            </p>
           </div>
         </div>
       )}
