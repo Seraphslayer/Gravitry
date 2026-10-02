@@ -86,16 +86,15 @@ function MapClickCatcher({ active, onPick }) {
   return null;
 }
 // Leaflet computes tile layout based on its container's size at mount time.
-// When the map-zone is collapsed to 0 height and later restored, the map
-// needs to be told to recalculate its size, or tiles render blank/offset.
-function MapVisibilitySync({ visible }) {
+// Since the map-zone's height changes whenever the sheet collapses/expands
+// (it's the flexible one in the column layout), Leaflet needs to be told to
+// recalculate on every such transition, or tiles render blank/offset.
+function MapVisibilitySync({ trigger }) {
   const map = useMap();
   useEffect(() => {
-    if (visible) {
-      const t = setTimeout(() => map.invalidateSize(), 260);
-      return () => clearTimeout(t);
-    }
-  }, [visible, map]);
+    const t = setTimeout(() => map.invalidateSize(), 260);
+    return () => clearTimeout(t);
+  }, [trigger, map]);
   return null;
 }
 
@@ -621,6 +620,15 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
   const excludeId = isOrigin ? null : originTerm?.id;
   const dests = TERMINALS.filter((t) => t.id !== excludeId);
 
+  // The sheet auto-collapses during pin mode, which hides the Cancel button
+  // below (it's inside this sheet's content). The parent renders a floating
+  // Cancel button over the map instead, which reaches back in via this event.
+  useEffect(() => {
+    const onCancel = () => setPinMode(false);
+    window.addEventListener("gv-cancel-pin", onCancel);
+    return () => window.removeEventListener("gv-cancel-pin", onCancel);
+  }, []);
+
   useEffect(() => {
     if (query.trim().length < 3) {
       setResults([]);
@@ -1135,7 +1143,7 @@ export default function PassengerApp() {
   const [guestMode, setGuestMode] = useState(false);
   const [tab, setTab] = useState("ride"); // ride | history
   const [authMode, setAuthMode] = useState(null); // null | "login" | "signup"
-  const [mapVisible, setMapVisible] = useState(true);
+  const [sheetCollapsed, setSheetCollapsed] = useState(false);
 
   const [flowStep, setFlowStep] = useState("origin"); // origin | destination | fare | waiting | success
   const [origin, setOrigin] = useState(null);
@@ -1173,6 +1181,14 @@ export default function PassengerApp() {
       });
     }
   }, [flowStep]);
+
+  // Collapse the bottom sheet down to just its handle whenever pin-drop mode
+  // starts, so the map gets the screen room needed to place a precise pin -
+  // and restore the sheet automatically once a pin is placed or cancelled.
+  // The manual toggle button below still works freely outside of this.
+  useEffect(() => {
+    setSheetCollapsed(pinState.pinMode);
+  }, [pinState.pinMode]);
 
   const isPassenger = user?.role === "passenger";
   const passenger = isPassenger
@@ -1335,8 +1351,8 @@ export default function PassengerApp() {
       </div>
 
       <button
-        onClick={() => setMapVisible((v) => !v)}
-        title={mapVisible ? "Minimize map" : "Show map"}
+        onClick={() => setSheetCollapsed((v) => !v)}
+        title={sheetCollapsed ? "Show menu" : "Maximize map"}
         style={{
           position: "absolute",
           top: "calc(12px + var(--safe-top))",
@@ -1354,14 +1370,14 @@ export default function PassengerApp() {
           cursor: "pointer",
         }}
       >
-        {mapVisible ? (
-          <Minimize2 size={16} color={C.navy} />
-        ) : (
+        {sheetCollapsed ? (
           <Maximize2 size={16} color={C.navy} />
+        ) : (
+          <Minimize2 size={16} color={C.navy} />
         )}
       </button>
 
-      <div className={`kiosk-map-zone${mapVisible ? "" : " map-hidden"}`}>
+      <div className="kiosk-map-zone">
         <MapContainer
           center={COMPLEX_CENTER}
           zoom={16}
@@ -1375,7 +1391,7 @@ export default function PassengerApp() {
             active={inLocationStep && pinState.pinMode}
             onPick={(lat, lng) => pinState.onMapPick?.(lat, lng)}
           />
-          <MapVisibilitySync visible={mapVisible} />
+          <MapVisibilitySync trigger={sheetCollapsed} />
           {inLocationStep && pinState.droppedPin && (
             <Marker
               position={[pinState.droppedPin.lat, pinState.droppedPin.lng]}
@@ -1404,9 +1420,55 @@ export default function PassengerApp() {
             </Marker>
           ))}
         </MapContainer>
+
+        {inLocationStep && pinState.pinMode && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: 12,
+              left: 12,
+              right: 12,
+              zIndex: 400,
+              background: "rgba(11,45,72,0.95)",
+              backdropFilter: "blur(6px)",
+              borderRadius: 14,
+              padding: "12px 16px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Crosshair size={16} color={C.yellow} />
+              <span style={{ color: "#fff", fontFamily: IN, fontSize: 12.5 }}>
+                Tap the map to drop a pin
+              </span>
+            </div>
+            <button
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("gv-cancel-pin"))
+              }
+              style={{
+                background: "rgba(255,255,255,0.12)",
+                border: "none",
+                borderRadius: 8,
+                padding: "5px 10px",
+                color: "#fff",
+                fontFamily: GR,
+                fontSize: 11.5,
+                cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className={`bottom-sheet${mapVisible ? "" : " sheet-full"}`}>
+      <div
+        className={`bottom-sheet${sheetCollapsed ? " sheet-collapsed" : ""}`}
+      >
         <div className="sheet-handle" />
 
         {error && flowStep !== "waiting" && (

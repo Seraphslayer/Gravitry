@@ -38,7 +38,13 @@ import {
   useLiveLocation,
   myLocationIcon,
 } from "./shared.jsx";
-import { getFares, createRequest, getRequestById, getRequests, acceptViaNfc } from "./api.js";
+import {
+  getFares,
+  createRequest,
+  getRequestById,
+  getRequests,
+  acceptViaNfc,
+} from "./api.js";
 
 function makeDivIcon(color, pulse = false) {
   return L.divIcon({
@@ -79,16 +85,15 @@ function MapClickCatcher({ active, onPick }) {
   return null;
 }
 // Leaflet computes tile layout based on its container's size at mount time.
-// When the map-zone is collapsed to 0 height and later restored, the map
-// needs to be told to recalculate its size, or tiles render blank/offset.
-function MapVisibilitySync({ visible }) {
+// Since the map-zone's height changes whenever the sheet collapses/expands
+// (it's the flexible one in the column layout), Leaflet needs to be told to
+// recalculate on every such transition, or tiles render blank/offset.
+function MapVisibilitySync({ trigger }) {
   const map = useMap();
   useEffect(() => {
-    if (visible) {
-      const t = setTimeout(() => map.invalidateSize(), 260);
-      return () => clearTimeout(t);
-    }
-  }, [visible, map]);
+    const t = setTimeout(() => map.invalidateSize(), 260);
+    return () => clearTimeout(t);
+  }, [trigger, map]);
   return null;
 }
 
@@ -147,7 +152,7 @@ export default function KioskView() {
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [mapVisible, setMapVisible] = useState(true);
+  const [sheetCollapsed, setSheetCollapsed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [nfcNotice, setNfcNotice] = useState(null); // { type: "success" | "error", text }
@@ -199,6 +204,14 @@ export default function KioskView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Collapse the bottom sheet down to just its handle whenever pin-drop mode
+  // starts, so the map gets the screen room needed to place a precise pin -
+  // and restore the sheet automatically once a pin is placed or cancelled.
+  // The manual toggle button below still works freely outside of this.
+  useEffect(() => {
+    setSheetCollapsed(pinMode);
+  }, [pinMode]);
+
   // NFC card-tap capture. The reader is a keyboard-emulation USB device: it
   // "types" the card's digits and an Enter, extremely fast (much faster than
   // a human). We only treat a burst as a tap when the inter-key timing is
@@ -235,7 +248,11 @@ export default function KioskView() {
       if (e.key === "Enter") {
         const buffered = scanBufferRef.current;
         scanBufferRef.current = "";
-        if (buffered.length >= MIN_DIGITS && buffered.length <= MAX_DIGITS && delta < FAST_THRESHOLD_MS) {
+        if (
+          buffered.length >= MIN_DIGITS &&
+          buffered.length <= MAX_DIGITS &&
+          delta < FAST_THRESHOLD_MS
+        ) {
           e.preventDefault();
           handleNfcTap(buffered);
         }
@@ -253,15 +270,25 @@ export default function KioskView() {
 
   const handleNfcTap = async (nfcId) => {
     const now = Date.now();
-    if (lastAcceptedRef.current.id === nfcId && now - lastAcceptedRef.current.time < 5000) {
+    if (
+      lastAcceptedRef.current.id === nfcId &&
+      now - lastAcceptedRef.current.time < 5000
+    ) {
       return; // same card still sitting near the reader - ignore repeat reads
     }
     lastAcceptedRef.current = { id: nfcId, time: now };
     try {
       const doc = await acceptViaNfc(nfcId, KIOSK);
-      setNfcNotice({ type: "success", text: `Driver ${doc.driver} accepted a trip to ${getTerm(doc.destination)?.short}` });
+      setNfcNotice({
+        type: "success",
+        text: `Driver ${doc.driver} accepted a trip to ${getTerm(doc.destination)?.short}`,
+      });
     } catch (err) {
-      setNfcNotice({ type: "error", text: err.message?.replace(/^API .* failed: /, "") || "Card not recognized" });
+      setNfcNotice({
+        type: "error",
+        text:
+          err.message?.replace(/^API .* failed: /, "") || "Card not recognized",
+      });
     }
     setTimeout(() => setNfcNotice(null), 4000);
   };
@@ -320,7 +347,9 @@ export default function KioskView() {
 
   const useMyLocation = () => {
     if (!navigator.geolocation) {
-      setLocationError("This device doesn't support location access. Try search or drop a pin instead.");
+      setLocationError(
+        "This device doesn't support location access. Try search or drop a pin instead.",
+      );
       return;
     }
     setLocating(true);
@@ -333,14 +362,20 @@ export default function KioskView() {
       (err) => {
         setLocating(false);
         if (err.code === err.PERMISSION_DENIED) {
-          setLocationError("Location access was denied. Try search or drop a pin instead.");
+          setLocationError(
+            "Location access was denied. Try search or drop a pin instead.",
+          );
         } else if (err.code === err.TIMEOUT) {
-          setLocationError("Location took too long to find. Try again, or search/drop a pin instead.");
+          setLocationError(
+            "Location took too long to find. Try again, or search/drop a pin instead.",
+          );
         } else {
-          setLocationError("Couldn't get location. Try search or drop a pin instead.");
+          setLocationError(
+            "Couldn't get location. Try search or drop a pin instead.",
+          );
         }
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
     );
   };
 
@@ -470,8 +505,8 @@ export default function KioskView() {
       </button>
 
       <button
-        onClick={() => setMapVisible((v) => !v)}
-        title={mapVisible ? "Minimize map" : "Show map"}
+        onClick={() => setSheetCollapsed((v) => !v)}
+        title={sheetCollapsed ? "Show menu" : "Maximize map"}
         style={{
           position: "absolute",
           top: "calc(108px + var(--safe-top))",
@@ -489,10 +524,10 @@ export default function KioskView() {
           cursor: "pointer",
         }}
       >
-        {mapVisible ? (
-          <Minimize2 size={16} color={C.navy} />
-        ) : (
+        {sheetCollapsed ? (
           <Maximize2 size={16} color={C.navy} />
+        ) : (
+          <Minimize2 size={16} color={C.navy} />
         )}
       </button>
 
@@ -566,7 +601,7 @@ export default function KioskView() {
         </div>
       )}
 
-      <div className={`kiosk-map-zone${mapVisible ? "" : " map-hidden"}`}>
+      <div className="kiosk-map-zone">
         <MapContainer
           center={COMPLEX_CENTER}
           zoom={16}
@@ -577,7 +612,7 @@ export default function KioskView() {
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
           <FlyToTerminal target={flyTarget} />
           <MapClickCatcher active={pinMode} onPick={pickLocation} />
-          <MapVisibilitySync visible={mapVisible} />
+          <MapVisibilitySync trigger={sheetCollapsed} />
           {droppedPin && (
             <Marker
               position={[droppedPin.lat, droppedPin.lng]}
@@ -585,7 +620,10 @@ export default function KioskView() {
             />
           )}
           {myPosition && (
-            <Marker position={[myPosition.lat, myPosition.lng]} icon={myLocationIcon}>
+            <Marker
+              position={[myPosition.lat, myPosition.lng]}
+              icon={myLocationIcon}
+            >
               <Popup>You are here</Popup>
             </Marker>
           )}
@@ -643,7 +681,9 @@ export default function KioskView() {
         )}
       </div>
 
-      <div className={`bottom-sheet${mapVisible ? "" : " sheet-full"}`}>
+      <div
+        className={`bottom-sheet${sheetCollapsed ? " sheet-collapsed" : ""}`}
+      >
         <div className="sheet-handle" />
 
         {error && step !== "waiting" && (
@@ -985,7 +1025,10 @@ export default function KioskView() {
                     marginBottom: 6,
                   }}
                 >
-                  {isGeo ? "Nearest terminal to your location" : "Nearest terminal to your pin"} ({snap.distanceMeters}m away):
+                  {isGeo
+                    ? "Nearest terminal to your location"
+                    : "Nearest terminal to your pin"}{" "}
+                  ({snap.distanceMeters}m away):
                 </div>
                 <div
                   style={{
@@ -1735,9 +1778,13 @@ export default function KioskView() {
                 No one waiting right now.
               </p>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
                 {pendingQueue.map((r, i) => {
-                  const wait = Math.round((Date.now() - new Date(r.ts).getTime()) / 60000);
+                  const wait = Math.round(
+                    (Date.now() - new Date(r.ts).getTime()) / 60000,
+                  );
                   return (
                     <div
                       key={r._id}
@@ -1756,15 +1803,42 @@ export default function KioskView() {
                           marginBottom: 6,
                         }}
                       >
-                        <span style={{ fontFamily: GR, fontWeight: 700, fontSize: 13, color: C.text }}>
+                        <span
+                          style={{
+                            fontFamily: GR,
+                            fontWeight: 700,
+                            fontSize: 13,
+                            color: C.text,
+                          }}
+                        >
                           {getTerm(r.destination)?.name}
                         </span>
-                        <span style={{ fontFamily: GR, fontWeight: 700, fontSize: 13, color: C.green }}>
-                          {"\u20B1"}{r.fare}.00
+                        <span
+                          style={{
+                            fontFamily: GR,
+                            fontWeight: 700,
+                            fontSize: 13,
+                            color: C.green,
+                          }}
+                        >
+                          {"\u20B1"}
+                          {r.fare}.00
                         </span>
                       </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontFamily: IN, fontSize: 11, color: C.muted }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: IN,
+                            fontSize: 11,
+                            color: C.muted,
+                          }}
+                        >
                           {wait <= 0 ? "Just now" : `${wait}m waiting`}
                         </span>
                         {i === 0 && (
@@ -1796,7 +1870,8 @@ export default function KioskView() {
                 textAlign: "center",
               }}
             >
-              Drivers: tap your card on the reader to accept the next waiting passenger.
+              Drivers: tap your card on the reader to accept the next waiting
+              passenger.
             </p>
           </div>
         </div>

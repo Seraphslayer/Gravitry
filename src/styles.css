@@ -39,13 +39,6 @@ body {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  transition: flex-basis 0.25s ease;
-}
-
-.kiosk-map-zone.map-hidden {
-  flex: 0 0 0;
-  min-height: 0;
-  overflow: hidden;
 }
 
 .leaflet-container {
@@ -68,8 +61,12 @@ body {
   z-index: 500;
 }
 
-.bottom-sheet.sheet-full {
-  max-height: 100%;
+/* Collapsed down to just the drag handle, so the map above gets the room -
+   used automatically during pin-drop mode, and toggleable manually too. */
+.bottom-sheet.sheet-collapsed {
+  max-height: 44px;
+  overflow: hidden;
+  padding-bottom: 14px;
 }
 
 .sheet-handle {
