@@ -35,7 +35,6 @@ import {
   fmtTime,
   TrikeIcon,
   nearestTerminal,
-  useLiveLocation,
   myLocationIcon,
 } from "./shared.jsx";
 import {
@@ -60,8 +59,8 @@ function makeDivIcon(color, pulse = false) {
     popupAnchor: [0, -28],
   });
 }
-const terminalIcon = makeDivIcon(C.green, true);
-const selectedIcon = makeDivIcon(C.yellow, true);
+const terminalIcon = makeDivIcon(C.green, false);
+const selectedIcon = makeDivIcon(C.yellow, false);
 const droppedPinIcon = L.divIcon({
   className: "",
   html: `<div style="width:14px;height:14px;border-radius:50%;background:#DC2626;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);"></div>`,
@@ -168,7 +167,6 @@ export default function KioskView() {
 
   // Persistent "you are here" GPS dot — always visible on the map when available.
   // Separate from the one-shot "Use My Current Location" picker below.
-  const { position: myPosition } = useLiveLocation();
 
   const originTerm = getTerm(KIOSK);
   const dests = TERMINALS.filter((t) => t.id !== KIOSK);
@@ -190,7 +188,15 @@ export default function KioskView() {
     const tick = async () => {
       try {
         const list = await getRequests({ status: "pending", origin: KIOSK });
-        if (!cancelled) setPendingQueue(list.slice().reverse()); // oldest first
+        if (!cancelled) {
+          const next = list.slice().reverse(); // oldest first
+          setPendingQueue((prev) =>
+            prev.length === next.length &&
+            prev.every((r, i) => r._id === next[i]._id)
+              ? prev
+              : next,
+          );
+        }
       } catch {
         /* keep last known list */
       }
@@ -427,7 +433,6 @@ export default function KioskView() {
           alignItems: "center",
           gap: 8,
           background: "rgba(11,45,72,0.92)",
-          backdropFilter: "blur(6px)",
           padding: "8px 14px",
           borderRadius: 30,
           boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
@@ -607,9 +612,18 @@ export default function KioskView() {
           zoom={16}
           zoomControl={false}
           attributionControl={false}
+          zoomAnimation={false}
+          fadeAnimation={false}
+          markerZoomAnimation={false}
+          inertia={false}
           style={{ width: "100%", height: "100%" }}
         >
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <TileLayer
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            updateWhenZooming={false}
+            updateWhenIdle={true}
+            keepBuffer={1}
+          />
           <FlyToTerminal target={flyTarget} />
           <MapClickCatcher active={pinMode} onPick={pickLocation} />
           <MapVisibilitySync trigger={sheetCollapsed} />
@@ -618,14 +632,6 @@ export default function KioskView() {
               position={[droppedPin.lat, droppedPin.lng]}
               icon={isGeo ? myLocationIcon : droppedPinIcon}
             />
-          )}
-          {myPosition && (
-            <Marker
-              position={[myPosition.lat, myPosition.lng]}
-              icon={myLocationIcon}
-            >
-              <Popup>You are here</Popup>
-            </Marker>
           )}
           {TERMINALS.map((t) => (
             <Marker
@@ -647,7 +653,6 @@ export default function KioskView() {
               right: 12,
               zIndex: 400,
               background: "rgba(11,45,72,0.95)",
-              backdropFilter: "blur(6px)",
               borderRadius: 14,
               padding: "12px 16px",
               display: "flex",
