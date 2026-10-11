@@ -37,8 +37,9 @@ export function AuthProvider({ children }) {
     return me;
   };
 
-  const signup = async (username, password, name, phone) => {
-    const me = await apiSignup(username, password, name, phone);
+  // data: { username, password, name, phone, address, idPhoto, selfie, consent }
+  const signup = async (data) => {
+    const me = await apiSignup(data);
     setUser(me);
     return me;
   };

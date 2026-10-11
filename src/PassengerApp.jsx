@@ -46,6 +46,7 @@ import {
 } from "./shared.jsx";
 import { getFares, createRequest, getRequestById, getRequests } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
+import SignupFlow from "./SignupFlow.jsx";
 
 function makeDivIcon(color, pulse = false) {
   return L.divIcon({
@@ -129,12 +130,9 @@ function Field({ icon, ...props }) {
 
 // ── Auth overlay — slides up over the map, doesn't replace it ──────────────
 function AuthOverlay({ mode, onModeChange, onClose }) {
-  const { login, signup } = useAuth();
+  const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -153,26 +151,6 @@ function AuthOverlay({ mode, onModeChange, onClose }) {
       }
     } catch {
       setError("Invalid username or password.");
-    }
-    setSubmitting(false);
-  };
-
-  const handleSignup = async (e) => {
-    e.preventDefault();
-    setError(null);
-    if (password !== confirm) {
-      setError("Passwords don't match.");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await signup(username.trim(), password, name.trim(), phone.trim());
-      onClose();
-    } catch (err) {
-      setError(
-        err.message?.replace(/^API .* failed: /, "") ||
-          "Could not create account.",
-      );
     }
     setSubmitting(false);
   };
@@ -238,9 +216,7 @@ function AuthOverlay({ mode, onModeChange, onClose }) {
             margin: "0 0 18px",
           }}
         >
-          {mode === "login"
-            ? "Log in to your account"
-            : "Create a passenger account"}
+          Log in to your account
         </p>
 
         {error && (
@@ -259,155 +235,68 @@ function AuthOverlay({ mode, onModeChange, onClose }) {
           </div>
         )}
 
-        {mode === "login" ? (
-          <form onSubmit={handleLogin}>
-            <Field
-              icon={<User size={15} color={C.muted} />}
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="Username"
-              autoComplete="username"
-            />
-            <Field
-              icon={<Lock size={15} color={C.muted} />}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password"
-              autoComplete="current-password"
-            />
+        <form onSubmit={handleLogin}>
+          <Field
+            icon={<User size={15} color={C.muted} />}
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Username"
+            autoComplete="username"
+          />
+          <Field
+            icon={<Lock size={15} color={C.muted} />}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            autoComplete="current-password"
+          />
+          <button
+            type="submit"
+            disabled={submitting}
+            style={{
+              width: "100%",
+              padding: "13px 0",
+              borderRadius: 12,
+              border: "none",
+              background: submitting ? C.muted : C.green,
+              color: "#fff",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 14,
+              cursor: submitting ? "default" : "pointer",
+              marginTop: 6,
+            }}
+          >
+            {submitting ? "Signing in…" : "Log In"}
+          </button>
+          <p
+            style={{
+              textAlign: "center",
+              fontFamily: IN,
+              fontSize: 12.5,
+              color: C.muted,
+              margin: "14px 0 0",
+            }}
+          >
+            No account?{" "}
             <button
-              type="submit"
-              disabled={submitting}
+              type="button"
+              onClick={() => onModeChange("signup")}
               style={{
-                width: "100%",
-                padding: "13px 0",
-                borderRadius: 12,
+                background: "none",
                 border: "none",
-                background: submitting ? C.muted : C.green,
-                color: "#fff",
-                fontFamily: GR,
-                fontWeight: 700,
-                fontSize: 14,
-                cursor: submitting ? "default" : "pointer",
-                marginTop: 6,
+                color: C.green,
+                fontWeight: 600,
+                cursor: "pointer",
+                padding: 0,
+                font: "inherit",
               }}
             >
-              {submitting ? "Signing in…" : "Log In"}
+              Sign up
             </button>
-            <p
-              style={{
-                textAlign: "center",
-                fontFamily: IN,
-                fontSize: 12.5,
-                color: C.muted,
-                margin: "14px 0 0",
-              }}
-            >
-              No account?{" "}
-              <button
-                type="button"
-                onClick={() => onModeChange("signup")}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: C.green,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  padding: 0,
-                  font: "inherit",
-                }}
-              >
-                Sign up
-              </button>
-            </p>
-          </form>
-        ) : (
-          <form onSubmit={handleSignup}>
-            <Field
-              icon={<User size={15} color={C.muted} />}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Full name"
-              autoComplete="name"
-            />
-            <Field
-              icon={<Phone size={15} color={C.muted} />}
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="Phone (optional)"
-              autoComplete="tel"
-            />
-            <Field
-              icon={<User size={15} color={C.muted} />}
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="Choose a username"
-              autoComplete="username"
-            />
-            <Field
-              icon={<Lock size={15} color={C.muted} />}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password (min 6 characters)"
-              autoComplete="new-password"
-            />
-            <Field
-              icon={<Lock size={15} color={C.muted} />}
-              type="password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              placeholder="Confirm password"
-              autoComplete="new-password"
-            />
-            <button
-              type="submit"
-              disabled={submitting}
-              style={{
-                width: "100%",
-                padding: "13px 0",
-                borderRadius: 12,
-                border: "none",
-                background: submitting ? C.muted : C.green,
-                color: "#fff",
-                fontFamily: GR,
-                fontWeight: 700,
-                fontSize: 14,
-                cursor: submitting ? "default" : "pointer",
-                marginTop: 6,
-              }}
-            >
-              {submitting ? "Creating…" : "Create Account"}
-            </button>
-            <p
-              style={{
-                textAlign: "center",
-                fontFamily: IN,
-                fontSize: 12.5,
-                color: C.muted,
-                margin: "14px 0 0",
-              }}
-            >
-              Already have an account?{" "}
-              <button
-                type="button"
-                onClick={() => onModeChange("login")}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: C.green,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  padding: 0,
-                  font: "inherit",
-                }}
-              >
-                Log in
-              </button>
-            </p>
-          </form>
-        )}
+          </p>
+        </form>
       </div>
     </div>
   );
@@ -1139,8 +1028,7 @@ function PinMarkerSync({ droppedPin, pinMode, isGeo, onMapPick }) {
 }
 
 export default function PassengerApp() {
-  const { user, loading, logout } = useAuth();
-  const [guestMode, setGuestMode] = useState(false);
+  const { user, loading, logout, refresh } = useAuth();
   const [tab, setTab] = useState("ride"); // ride | history
   const [authMode, setAuthMode] = useState(null); // null | "login" | "signup"
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
@@ -1191,6 +1079,14 @@ export default function PassengerApp() {
   }, [pinState.pinMode]);
 
   const isPassenger = user?.role === "passenger";
+
+  // While the account is pending, re-check its status now and then so the
+  // banner disappears soon after staff approve it (no reload needed).
+  useEffect(() => {
+    if (user?.status !== "pending") return;
+    const id = setInterval(refresh, 30000);
+    return () => clearInterval(id);
+  }, [user?.status, refresh]);
   const passenger = isPassenger
     ? { id: user.passengerId, name: user.name }
     : null;
@@ -1247,20 +1143,27 @@ export default function PassengerApp() {
       const r = await createRequest(origin.id, dest.id, fare, passenger);
       setMyRequestId(r._id);
       setFlowStep("waiting");
-    } catch {
-      setError("Couldn't send your request. Please try again.");
+    } catch (err) {
+      const msg = err.message
+        ? err.message.replace(/^API .* failed: /, "")
+        : "";
+      setError(
+        /verif|account/i.test(msg)
+          ? msg
+          : "Couldn't send your request. Please try again.",
+      );
     }
     setSubmitting(false);
   };
 
   const handleLogout = async () => {
     await logout();
-    setGuestMode(false);
     setTab("ride");
     resetFlow();
   };
 
-  const showWelcomePanel = !loading && !isPassenger && !guestMode;
+  const showWelcomePanel = !loading && !isPassenger;
+  const canBook = user?.status !== "rejected";
   const inLocationStep = flowStep === "origin" || flowStep === "destination";
 
   return (
@@ -1328,24 +1231,6 @@ export default function PassengerApp() {
               {user.name}
             </span>
             <LogOut size={13} color={C.muted} />
-          </button>
-        ) : guestMode ? (
-          <button
-            onClick={() => setAuthMode("login")}
-            style={{
-              background: C.yellow,
-              border: "none",
-              borderRadius: 20,
-              padding: "7px 14px",
-              fontFamily: GR,
-              fontWeight: 700,
-              fontSize: 11.5,
-              color: C.navy,
-              cursor: "pointer",
-              boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-            }}
-          >
-            Log In
           </button>
         ) : null}
       </div>
@@ -1588,26 +1473,11 @@ export default function PassengerApp() {
               >
                 <UserPlus size={17} /> Create Account
               </button>
-              <button
-                onClick={() => setGuestMode(true)}
-                style={{
-                  width: "100%",
-                  padding: "10px 0",
-                  background: "transparent",
-                  border: "none",
-                  color: C.muted,
-                  fontFamily: IN,
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
-              >
-                Continue as Guest
-              </button>
             </div>
           </div>
         )}
 
-        {!loading && (isPassenger || guestMode) && (
+        {!loading && isPassenger && (
           <div>
             {isPassenger && (
               <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
@@ -1636,11 +1506,11 @@ export default function PassengerApp() {
               </div>
             )}
 
-            {!isPassenger && guestMode && (
+            {user.status === "pending" && (
               <div
                 style={{
                   display: "flex",
-                  alignItems: "center",
+                  alignItems: "flex-start",
                   gap: 8,
                   background: "#FEF3C7",
                   color: "#92400E",
@@ -1649,14 +1519,56 @@ export default function PassengerApp() {
                   fontFamily: IN,
                   fontSize: 12,
                   marginBottom: 16,
+                  lineHeight: 1.45,
                 }}
               >
-                <Clock size={14} /> Browsing as guest — log in to save your ride
-                history.
+                <Clock size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  Temporary account. TODA staff are checking your ID and selfie,
+                  and your account becomes permanent once they approve it.
+                </span>
+              </div>
+            )}
+            {user.status === "rejected" && (
+              <div
+                style={{
+                  background: "#FEE2E2",
+                  color: "#991B1B",
+                  borderRadius: 12,
+                  padding: "12px 14px",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  marginBottom: 16,
+                  lineHeight: 1.45,
+                }}
+              >
+                <div>
+                  Your verification was not approved
+                  {user.rejectionReason ? ": " + user.rejectionReason : "."} You
+                  cannot book rides until you resubmit your documents and TODA
+                  staff approve them.
+                </div>
+                <button
+                  onClick={() => setAuthMode("resubmit")}
+                  style={{
+                    marginTop: 10,
+                    background: "#991B1B",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "9px 14px",
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 12.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  Resubmit documents
+                </button>
               </div>
             )}
 
-            {(tab === "ride" || !isPassenger) && (
+            {tab === "ride" && canBook && (
               <>
                 {flowStep === "origin" && (
                   <LocationStep
@@ -2011,10 +1923,16 @@ export default function PassengerApp() {
         )}
       </div>
 
-      {authMode && (
+      {authMode === "login" && (
         <AuthOverlay
-          mode={authMode}
+          mode="login"
           onModeChange={setAuthMode}
+          onClose={() => setAuthMode(null)}
+        />
+      )}
+      {(authMode === "signup" || authMode === "resubmit") && (
+        <SignupFlow
+          resubmit={authMode === "resubmit"}
           onClose={() => setAuthMode(null)}
         />
       )}

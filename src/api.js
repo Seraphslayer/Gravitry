@@ -24,10 +24,18 @@ export const login = (username, password) =>
     body: JSON.stringify({ username, password }),
   });
 
-export const signup = (username, password, name, phone) =>
+// data: { username, password, name, phone, address, idPhoto, selfie, consent }
+export const signup = (data) =>
   req("auth?action=signup", {
     method: "POST",
-    body: JSON.stringify({ username, password, name, phone }),
+    body: JSON.stringify(data),
+  });
+
+// data: { idPhoto, selfie, consent } - for a rejected/pending passenger
+export const resubmitVerification = (data) =>
+  req("auth?action=resubmit", {
+    method: "POST",
+    body: JSON.stringify(data),
   });
 
 export const logout = () => req("auth?action=logout", { method: "POST" });
@@ -94,4 +102,14 @@ export const acceptViaNfc = (nfcId, origin) =>
   req("requests?action=nfc-accept", {
     method: "POST",
     body: JSON.stringify({ nfcId, origin }),
+  });
+
+// -- Passenger verification (admin only) ----------------------------------------------------------------
+export const getVerifications = () => req("verifications");
+export const getVerificationPhotos = (id) =>
+  req(`verifications?id=${encodeURIComponent(id)}`);
+export const reviewVerification = (id, decision, reason) =>
+  req(`verifications?id=${encodeURIComponent(id)}&action=${decision}`, {
+    method: "POST",
+    body: JSON.stringify(decision === "reject" ? { reason } : {}),
   });

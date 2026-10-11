@@ -2,6 +2,12 @@ import { getDb } from "./_db.js";
 import { getSessionFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
 
+// Policy switch: may a passenger whose account is still pending staff
+// verification book rides? true = yes (temporary account works, flagged on the
+// request). false = they must wait until TODA staff approve them.
+// Rejected accounts can never book until they resubmit and get approved.
+const PENDING_CAN_BOOK = true;
+
 async function nextId(db, name, prefix) {
   const result = await db
     .collection("counters")
@@ -90,10 +96,32 @@ export default async function handler(req, res) {
       // passengerId and pollute their ride history. Guests (no session) simply
       // get no passenger fields, same as before.
       const session = getSessionFromReq(req);
-      const identity =
-        session?.role === "passenger"
-          ? { passengerId: session.passengerId, passengerName: session.name }
-          : {};
+      let identity = {};
+      if (session?.role === "passenger") {
+        const p = await db
+          .collection("passengers")
+          .findOne({ _id: session.passengerId }, { projection: { status: 1 } });
+        if (!p) {
+          return res.status(401).json({ error: "Account not found" });
+        }
+        const status = p.status || "verified";
+        if (status === "rejected") {
+          return res.status(403).json({
+            error:
+              "Your account verification was rejected. Please resubmit your documents.",
+          });
+        }
+        if (status === "pending" && !PENDING_CAN_BOOK) {
+          return res.status(403).json({
+            error: "Your account is still waiting for TODA staff verification.",
+          });
+        }
+        identity = {
+          passengerId: session.passengerId,
+          passengerName: session.name,
+          passengerStatus: status,
+        };
+      }
 
       const reqId = await nextId(db, "requests", "DR");
       const doc = {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Truck, Star, Wifi } from "lucide-react";
+import { Truck, Star, Wifi, X } from "lucide-react";
 import {
   C,
   GR,
@@ -17,6 +17,9 @@ import {
   getFares,
   updateFare,
   getRequests,
+  getVerifications,
+  getVerificationPhotos,
+  reviewVerification,
 } from "./api.js";
 
 function Badge({ children, variant = "gray" }) {
@@ -914,12 +917,442 @@ function LogTab({ logs, loading }) {
   );
 }
 
+function ReviewModal({ passenger, onClose, onDone }) {
+  const [photos, setPhotos] = useState(null);
+  const [error, setError] = useState(null);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getVerificationPhotos(passenger._id)
+      .then(setPhotos)
+      .catch(() =>
+        setError(
+          "Could not load the photos. They may already have been reviewed.",
+        ),
+      );
+  }, [passenger._id]);
+
+  const decide = async (decision) => {
+    if (decision === "reject" && !reason.trim()) {
+      setError("Please give a reason so the passenger knows what to fix.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await reviewVerification(passenger._id, decision, reason.trim());
+      onDone();
+    } catch (err) {
+      setError(
+        err.message
+          ? err.message.replace(/^API .* failed: /, "")
+          : "Could not save the decision.",
+      );
+    }
+    setBusy(false);
+  };
+
+  const row = (label, value) => (
+    <div
+      style={{
+        display: "flex",
+        gap: 10,
+        fontFamily: IN,
+        fontSize: 13,
+        marginBottom: 4,
+      }}
+    >
+      <span style={{ color: C.muted, minWidth: 74 }}>{label}</span>
+      <span style={{ color: C.text, fontWeight: 600 }}>{value || "-"}</span>
+    </div>
+  );
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        zIndex: 3000,
+        overflowY: "auto",
+        padding: 12,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#fff",
+          borderRadius: 16,
+          maxWidth: 680,
+          margin: "0 auto",
+          padding: 20,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 12,
+          }}
+        >
+          <h3
+            style={{
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 16,
+              color: C.text,
+              margin: 0,
+            }}
+          >
+            Review account
+          </h3>
+          <button
+            onClick={onClose}
+            style={{
+              background: C.surface,
+              border: "none",
+              borderRadius: 8,
+              width: 30,
+              height: 30,
+              cursor: "pointer",
+            }}
+          >
+            <X size={15} color={C.muted} />
+          </button>
+        </div>
+
+        {row("Name", passenger.name)}
+        {row("Username", passenger.username)}
+        {row("Phone", passenger.phone)}
+        {row("Address", passenger.address)}
+        {row(
+          "Submitted",
+          passenger.verificationSubmittedAt
+            ? fmtTime(passenger.verificationSubmittedAt)
+            : "",
+        )}
+        <p
+          style={{
+            fontFamily: IN,
+            fontSize: 12,
+            color: C.muted,
+            margin: "10px 0 14px",
+            lineHeight: 1.45,
+          }}
+        >
+          Check that the ID is real and readable, that its address is in Mary
+          Cris Complex and matches the address above, and that the selfie shows
+          the same person as the ID.
+        </p>
+
+        {error && (
+          <div
+            style={{
+              background: "#FEE2E2",
+              color: "#991B1B",
+              borderRadius: 10,
+              padding: "8px 12px",
+              fontSize: 12.5,
+              fontFamily: IN,
+              marginBottom: 12,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        {!photos && !error && (
+          <p style={{ fontFamily: IN, fontSize: 13, color: C.muted }}>
+            Loading photos...
+          </p>
+        )}
+
+        {photos && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+              marginBottom: 16,
+            }}
+          >
+            {[
+              ["Government ID", photos.idPhoto],
+              ["Selfie", photos.selfie],
+            ].map(([label, src]) => (
+              <div key={label}>
+                <p
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 12,
+                    color: C.navy,
+                    margin: "0 0 4px",
+                  }}
+                >
+                  {label}
+                </p>
+                <img
+                  src={src}
+                  alt={label}
+                  style={{ width: "100%", borderRadius: 10, display: "block" }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {photos && rejecting && (
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            maxLength={300}
+            placeholder="Reason for rejecting (the passenger will see this)"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              minHeight: 70,
+              padding: 10,
+              borderRadius: 10,
+              border: `1.5px solid ${C.border}`,
+              fontFamily: IN,
+              fontSize: 13,
+              marginBottom: 10,
+            }}
+          />
+        )}
+
+        {photos && (
+          <div style={{ display: "flex", gap: 10 }}>
+            {!rejecting ? (
+              <>
+                <button
+                  onClick={() => decide("approve")}
+                  disabled={busy}
+                  style={{
+                    flex: 1,
+                    padding: "13px 0",
+                    borderRadius: 12,
+                    border: "none",
+                    background: C.green,
+                    color: "#fff",
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  {busy ? "Saving..." : "Approve - make permanent"}
+                </button>
+                <button
+                  onClick={() => setRejecting(true)}
+                  disabled={busy}
+                  style={{
+                    flex: "0 0 auto",
+                    padding: "13px 18px",
+                    borderRadius: 12,
+                    border: "1.5px solid #DC2626",
+                    background: "#fff",
+                    color: "#DC2626",
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  Reject
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => decide("reject")}
+                  disabled={busy}
+                  style={{
+                    flex: 1,
+                    padding: "13px 0",
+                    borderRadius: 12,
+                    border: "none",
+                    background: "#DC2626",
+                    color: "#fff",
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  {busy ? "Saving..." : "Confirm rejection"}
+                </button>
+                <button
+                  onClick={() => {
+                    setRejecting(false);
+                    setError(null);
+                  }}
+                  disabled={busy}
+                  style={{
+                    flex: "0 0 auto",
+                    padding: "13px 18px",
+                    borderRadius: 12,
+                    border: `1.5px solid ${C.border}`,
+                    background: "#fff",
+                    color: C.text,
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  Back
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        <p
+          style={{
+            fontFamily: IN,
+            fontSize: 11,
+            color: C.muted,
+            margin: "12px 0 0",
+          }}
+        >
+          The photos are deleted as soon as you approve or reject.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function VerifyTab({ items, loading, onChanged }) {
+  const [reviewing, setReviewing] = useState(null);
+  return (
+    <div
+      style={{
+        background: C.white,
+        borderRadius: 12,
+        border: `1px solid ${C.border}`,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}` }}
+      >
+        <span
+          style={{
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 14,
+            color: C.text,
+          }}
+        >
+          Accounts waiting for verification
+        </span>
+      </div>
+      {loading && (
+        <p
+          style={{
+            padding: 24,
+            textAlign: "center",
+            color: C.muted,
+            fontFamily: IN,
+            fontSize: 13,
+            margin: 0,
+          }}
+        >
+          Loading...
+        </p>
+      )}
+      {!loading && items.length === 0 && (
+        <p
+          style={{
+            padding: 32,
+            textAlign: "center",
+            color: C.muted,
+            fontFamily: IN,
+            fontSize: 13,
+            margin: 0,
+          }}
+        >
+          No accounts are waiting. New signups will show up here.
+        </p>
+      )}
+      {items.map((p, i) => (
+        <div
+          key={p._id}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "12px 16px",
+            borderTop: i === 0 ? "none" : `1px solid ${C.border}`,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 13.5,
+                color: C.text,
+              }}
+            >
+              {p.name}{" "}
+              <span style={{ color: C.muted, fontWeight: 500, fontSize: 12 }}>
+                @{p.username}
+              </span>
+            </div>
+            <div style={{ fontFamily: IN, fontSize: 12, color: C.muted }}>
+              {p.address || "No address"}
+              {p.verificationSubmittedAt
+                ? " . " + fmtTime(p.verificationSubmittedAt)
+                : ""}
+            </div>
+          </div>
+          <button
+            onClick={() => setReviewing(p)}
+            style={{
+              background: C.navy,
+              color: "#fff",
+              border: "none",
+              borderRadius: 10,
+              padding: "9px 16px",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 12.5,
+              cursor: "pointer",
+            }}
+          >
+            Review
+          </button>
+        </div>
+      ))}
+      {reviewing && (
+        <ReviewModal
+          passenger={reviewing}
+          onClose={() => setReviewing(null)}
+          onDone={() => {
+            setReviewing(null);
+            onChanged();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function AdminView() {
   const [tab, setTab] = useState("drivers");
   const [drivers, setDrivers] = useState([]);
   const [tricycles, setTricycles] = useState([]);
   const [fares, setFares] = useState({});
   const [logs, setLogs] = useState([]);
+  const [verifs, setVerifs] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const loadAll = useCallback(async () => {
@@ -936,6 +1369,11 @@ export default function AdminView() {
       setLogs(l);
     } catch {
       /* keep last known good state */
+    }
+    try {
+      setVerifs(await getVerifications());
+    } catch {
+      /* keep last known list */
     }
     setLoading(false);
   }, []);
@@ -1074,6 +1512,7 @@ export default function AdminView() {
             ["drivers", "Drivers"],
             ["tricycles", "Tricycles"],
             ["fares", "Fares"],
+            ["verify", "Verify"],
             ["log", "Log"],
           ].map(([key, label]) => (
             <button
@@ -1096,6 +1535,20 @@ export default function AdminView() {
               }}
             >
               {label}
+              {key === "verify" && verifs.length > 0 && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    background: "#DC2626",
+                    color: "#fff",
+                    borderRadius: 10,
+                    padding: "1px 7px",
+                    fontSize: 10.5,
+                  }}
+                >
+                  {verifs.length}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -1112,6 +1565,9 @@ export default function AdminView() {
             loading={loading}
             onUpdated={(key, v) => setFares((p) => ({ ...p, [key]: v }))}
           />
+        )}
+        {tab === "verify" && (
+          <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
         )}
         {tab === "log" && <LogTab logs={logs} loading={loading} />}
       </div>
