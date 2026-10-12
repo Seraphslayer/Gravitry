@@ -8,6 +8,10 @@ import { requireSession, isNonEmptyString } from "./_authz.js";
 // Rejected accounts can never book until they resubmit and get approved.
 const PENDING_CAN_BOOK = true;
 
+// Kiosk rides must be accepted by an NFC card tap. Only one may be pending per
+// kiosk at a time; stale ones expire so the kiosk can never get stuck.
+const KIOSK_PENDING_TTL_MIN = 10;
+
 async function nextId(db, name, prefix) {
   const result = await db
     .collection("counters")
@@ -91,6 +95,41 @@ export default async function handler(req, res) {
           .json({ error: "fare must be a non-negative number" });
       }
 
+      // Where the ride was created. Kiosk rides can only be accepted by an NFC
+      // card tap, and only one may be pending per kiosk at a time.
+      const source = req.body?.source === "kiosk" ? "kiosk" : "app";
+      if (source === "kiosk") {
+        const cutoff = new Date(
+          Date.now() - KIOSK_PENDING_TTL_MIN * 60000,
+        ).toISOString();
+        await col.updateMany(
+          {
+            status: "pending",
+            source: "kiosk",
+            origin: o,
+            ts: { $lt: cutoff },
+          },
+          {
+            $set: {
+              status: "cancelled",
+              cancelReason: "expired",
+              cancelledAt: new Date().toISOString(),
+            },
+          },
+        );
+        const busy = await col.findOne({
+          status: "pending",
+          source: "kiosk",
+          origin: o,
+        });
+        if (busy) {
+          return res.status(409).json({
+            error:
+              "A ride is already waiting at this kiosk. A driver must tap their card to accept it first.",
+          });
+        }
+      }
+
       // Passenger identity is derived from the session, never trusted from the
       // request body - otherwise anyone could tag a ride with someone else's
       // passengerId and pollute their ride history. Guests (no session) simply
@@ -130,6 +169,7 @@ export default async function handler(req, res) {
         destination,
         fare,
         status: "pending",
+        source,
         ts: new Date().toISOString(),
         ...identity,
       };
@@ -141,8 +181,8 @@ export default async function handler(req, res) {
     // terminal. The reader is a keyboard-emulation USB device, so the
     // browser itself calls this directly - there's no secret key involved
     // (see the rate-limiting helpers above for how this stays protected
-    // without one). Dispatches the oldest pending request at that terminal
-    // to the card's linked driver.
+    // without one). Dispatches the highest-priority pending request at that
+    // terminal (kiosk-created first, then oldest) to the card's linked driver.
     if (req.method === "POST" && !id && action === "nfc-accept") {
       const { nfcId, origin: term } = req.body || {};
       if (
@@ -154,11 +194,9 @@ export default async function handler(req, res) {
       }
 
       if (!(await withinGlobalNfcRate(db))) {
-        return res
-          .status(429)
-          .json({
-            error: "Too many NFC requests right now. Try again shortly.",
-          });
+        return res.status(429).json({
+          error: "Too many NFC requests right now. Try again shortly.",
+        });
       }
       if (await isNfcIdLocked(db, nfcId)) {
         return res
@@ -177,9 +215,12 @@ export default async function handler(req, res) {
           .json({ error: "You already have an active trip" });
       }
 
+      // "kiosk" sorts above "app" when descending, so kiosk rides come first,
+      // then oldest first within each group. Old requests with no source
+      // field sort last.
       const pendingReq = await col.findOne(
         { status: "pending", origin: term },
-        { sort: { ts: 1 } },
+        { sort: { source: -1, ts: 1 } },
       );
       if (!pendingReq)
         return res.status(404).json({ error: "No pending requests right now" });
@@ -258,6 +299,16 @@ export default async function handler(req, res) {
       if (!session) return;
       const driverId = session.driverId;
 
+      // Kiosk rides are NFC-only: the driver must physically tap their card
+      // at the kiosk. (Remove this block to also allow the Driver app.)
+      const target = await col.findOne({ _id: id });
+      if (target?.source === "kiosk") {
+        return res.status(403).json({
+          error:
+            "Kiosk rides must be accepted by tapping your NFC card at the kiosk.",
+        });
+      }
+
       const driver = await db.collection("drivers").findOne({ _id: driverId });
       if (!driver) return res.status(404).json({ error: "Driver not found" });
 
@@ -290,6 +341,38 @@ export default async function handler(req, res) {
           { $set: { status: "on_trip", terminal: null } },
         );
 
+      return res.status(200).json(doc);
+    }
+
+    // POST /api/requests?id=DR-001&action=cancel
+    // Kiosk rides can be cancelled from the kiosk itself (no login there);
+    // app rides only by the owning passenger or an admin.
+    if (req.method === "POST" && id && action === "cancel") {
+      const target = await col.findOne({ _id: id });
+      if (!target) return res.status(404).json({ error: "Request not found" });
+      if (target.status !== "pending") {
+        return res.status(409).json({ error: "Request is no longer pending" });
+      }
+      if (target.source !== "kiosk") {
+        const session = requireSession(req, res, ["passenger", "admin"]);
+        if (!session) return;
+        if (
+          session.role === "passenger" &&
+          session.passengerId !== target.passengerId
+        ) {
+          return res.status(403).json({ error: "Not your request" });
+        }
+      }
+      const result = await col.findOneAndUpdate(
+        { _id: id, status: "pending" },
+        {
+          $set: { status: "cancelled", cancelledAt: new Date().toISOString() },
+        },
+        { returnDocument: "after" },
+      );
+      const doc = result.value ?? result;
+      if (!doc)
+        return res.status(409).json({ error: "Request was just accepted" });
       return res.status(200).json(doc);
     }
 

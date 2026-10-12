@@ -39,6 +39,7 @@ import {
 import {
   getFares,
   createRequest,
+  cancelRequest,
   getRequestById,
   getRequests,
   acceptViaNfc,
@@ -74,6 +75,7 @@ function FlyToTerminal({ target }) {
   }, [target, map]);
   return null;
 }
+
 function MapClickCatcher({ active, onPick }) {
   useMapEvents({
     click(e) {
@@ -82,10 +84,7 @@ function MapClickCatcher({ active, onPick }) {
   });
   return null;
 }
-// Leaflet computes tile layout based on its container's size at mount time.
-// Since the map-zone's height changes whenever the sheet collapses/expands
-// (it's the flexible one in the column layout), Leaflet needs to be told to
-// recalculate on every such transition, or tiles render blank/offset.
+
 function MapVisibilitySync({ trigger }) {
   const map = useMap();
   useEffect(() => {
@@ -150,48 +149,41 @@ export default function KioskView() {
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
-  const [nfcNotice, setNfcNotice] = useState(null); // { type: "success" | "error", text }
+  const [nfcNotice, setNfcNotice] = useState(null);
   const [pendingQueue, setPendingQueue] = useState([]);
   const [showQueue, setShowQueue] = useState(false);
 
-  // NFC keystroke-capture bookkeeping. The reader emulates a keyboard, so we
-  // distinguish a card tap from a real human keypress by typing speed - the
-  // reader sends characters far faster than anyone could type by hand.
   const scanBufferRef = useRef("");
   const lastKeyTimeRef = useRef(0);
   const lastAcceptedRef = useRef({ id: null, time: 0 });
-
-  // No GPS on the kiosk: it is fixed at its own terminal (KIOSK below), so the
-  // origin is always known and passengers only choose a destination.
 
   const originTerm = getTerm(KIOSK);
   const dests = TERMINALS.filter((t) => t.id !== KIOSK);
   const getFare = (o, d) => fares[`${o}-${d}`] ?? 0;
   const fare = dest ? getFare(KIOSK, dest.id) : 0;
+  const kioskBusy = pendingQueue.some((r) => r.source === "kiosk");
 
-  // Load fares from backend on mount
   useEffect(() => {
     getFares()
       .then(setFares)
       .catch(() => setError("Could not load fares. Check your connection."));
   }, []);
 
-  // Poll the pending queue for this terminal, so drivers standing at the
-  // kiosk (or anyone checking) can see who's waiting - independent of
-  // whether a passenger is mid-booking on this same screen right now.
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
         const list = await getRequests({ status: "pending", origin: KIOSK });
         if (!cancelled) {
-          const next = list.slice().reverse(); // oldest first
-          setPendingQueue((prev) =>
-            prev.length === next.length &&
-            prev.every((r, i) => r._id === next[i]._id)
-              ? prev
-              : next,
-          );
+          const next = list
+            .slice()
+            .sort(
+              (a, b) =>
+                (a.source === "kiosk" ? 0 : 1) -
+                  (b.source === "kiosk" ? 0 : 1) ||
+                new Date(a.ts) - new Date(b.ts),
+            );
+          setPendingQueue(next);
         }
       } catch {
         /* keep last known list */
@@ -203,27 +195,16 @@ export default function KioskView() {
       cancelled = true;
       clearInterval(id);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Collapse the bottom sheet down to just its handle whenever pin-drop mode
-  // starts, so the map gets the screen room needed to place a precise pin -
-  // and restore the sheet automatically once a pin is placed or cancelled.
-  // The manual toggle button below still works freely outside of this.
   useEffect(() => {
     setSheetCollapsed(pinMode);
   }, [pinMode]);
 
-  // NFC card-tap capture. The reader is a keyboard-emulation USB device: it
-  // "types" the card's digits and an Enter, extremely fast (much faster than
-  // a human). We only treat a burst as a tap when the inter-key timing is
-  // fast throughout - anything at normal typing speed is left completely
-  // alone (e.g. the destination search box below still works normally).
   useEffect(() => {
     const FAST_THRESHOLD_MS = 50;
     const MIN_DIGITS = 6;
     const MAX_DIGITS = 20;
-    const DEBOUNCE_MS = 5000;
 
     const handleKeyDown = (e) => {
       const now = performance.now();
@@ -233,15 +214,9 @@ export default function KioskView() {
 
       if (isDigit) {
         if (delta < FAST_THRESHOLD_MS && scanBufferRef.current.length > 0) {
-          // Continuing a fast burst - almost certainly the reader, not a
-          // person. Swallow the keystroke so it never lands in a focused
-          // input, and keep collecting it.
           e.preventDefault();
           scanBufferRef.current += e.key;
         } else {
-          // Either the very first character of a possible burst, or a slow
-          // (human) keypress. We can't yet tell which - start a fresh
-          // buffer but don't intercept the keystroke itself.
           scanBufferRef.current = e.key;
         }
         return;
@@ -261,13 +236,11 @@ export default function KioskView() {
         return;
       }
 
-      // Any other key breaks a burst in progress.
       scanBufferRef.current = "";
     };
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleNfcTap = async (nfcId) => {
@@ -276,7 +249,7 @@ export default function KioskView() {
       lastAcceptedRef.current.id === nfcId &&
       now - lastAcceptedRef.current.time < 5000
     ) {
-      return; // same card still sitting near the reader - ignore repeat reads
+      return;
     }
     lastAcceptedRef.current = { id: nfcId, time: now };
     try {
@@ -295,7 +268,6 @@ export default function KioskView() {
     setTimeout(() => setNfcNotice(null), 4000);
   };
 
-  // Poll for driver acceptance while waiting
   useEffect(() => {
     if (step !== "waiting" || !myRequestId) return;
     const tick = async () => {
@@ -314,7 +286,6 @@ export default function KioskView() {
     return () => clearInterval(id);
   }, [step, myRequestId]);
 
-  // Nominatim search
   useEffect(() => {
     if (query.trim().length < 3) {
       setResults([]);
@@ -324,7 +295,9 @@ export default function KioskView() {
       setSearching(true);
       try {
         const [clat, clng] = COMPLEX_CENTER;
-        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&viewbox=${clng - 0.02},${clat + 0.02},${clng + 0.02},${clat - 0.02}&bounded=0`;
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+          query,
+        )}&limit=5&viewbox=${clng - 0.02},${clat + 0.02},${clng + 0.02},${clat - 0.02}&bounded=0`;
         const res = await fetch(url, { headers: { "Accept-Language": "en" } });
         setResults((await res.json()) || []);
       } catch {
@@ -356,13 +329,27 @@ export default function KioskView() {
     setSubmitting(true);
     setError(null);
     try {
-      const req = await createRequest(KIOSK, dest.id, fare);
+      const req = await createRequest(KIOSK, dest.id, fare, null, "kiosk");
       setMyRequestId(req._id);
       setStep("waiting");
-    } catch {
-      setError("Couldn't send your request. Please try again.");
+    } catch (err) {
+      const msg = err.message?.replace(/^API .* failed: /, "") || "";
+      setError(
+        /already waiting/i.test(msg)
+          ? msg
+          : "Couldn't send your request. Please try again.",
+      );
     }
     setSubmitting(false);
+  };
+
+  const cancelWaiting = async () => {
+    try {
+      if (myRequestId) await cancelRequest(myRequestId);
+    } catch {
+      /* already accepted or gone - reset anyway */
+    }
+    reset();
   };
 
   const reset = () => {
@@ -377,6 +364,7 @@ export default function KioskView() {
     setSnap(null);
     setError(null);
   };
+
   const flyTarget = dest || originTerm;
 
   return (
@@ -713,24 +701,45 @@ export default function KioskView() {
                 <Shield size={20} color={C.green} />
               </div>
             </div>
+
+            {kioskBusy && (
+              <div
+                style={{
+                  marginTop: 14,
+                  background: "#FEF3C7",
+                  color: "#92400E",
+                  borderRadius: 12,
+                  padding: "10px 14px",
+                  fontFamily: IN,
+                  fontSize: 12.5,
+                  lineHeight: 1.45,
+                }}
+              >
+                A passenger is already waiting. A driver must tap their card to
+                accept that ride before a new one can be requested.
+              </div>
+            )}
             <button
               onClick={() => setStep("select")}
+              disabled={kioskBusy}
               style={{
                 width: "100%",
-                marginTop: 18,
+                marginTop: 14,
                 padding: "18px 20px",
                 borderRadius: 16,
                 border: "none",
-                background: C.yellow,
-                color: C.navy,
+                background: kioskBusy ? C.surface : C.yellow,
+                color: kioskBusy ? C.muted : C.navy,
                 fontSize: "clamp(15px, 4vw, 17px)",
                 fontWeight: 700,
                 fontFamily: GR,
-                cursor: "pointer",
+                cursor: kioskBusy ? "default" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                boxShadow: "0 6px 20px rgba(247,195,68,0.4)",
+                boxShadow: kioskBusy
+                  ? "none"
+                  : "0 6px 20px rgba(247,195,68,0.4)",
               }}
             >
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -738,6 +747,7 @@ export default function KioskView() {
               </span>
               <ChevronRight size={20} />
             </button>
+
             <div
               style={{
                 display: "flex",
@@ -1049,604 +1059,376 @@ export default function KioskView() {
                   >
                     <div
                       style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
+                        width: 32,
+                        height: 32,
+                        borderRadius: "50%",
                         background: C.greenLight,
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        flexShrink: 0,
+                        color: C.green,
+                        fontFamily: GR,
+                        fontWeight: 700,
+                        fontSize: 12,
                       }}
                     >
-                      <MapPin size={16} color={C.green} />
+                      {t.short}
                     </div>
                     <div>
                       <div
                         style={{
-                          color: C.text,
                           fontFamily: GR,
-                          fontWeight: 600,
-                          fontSize: 14,
+                          fontWeight: 700,
+                          fontSize: 13.5,
+                          color: C.text,
                         }}
                       >
                         {t.name}
                       </div>
                       <div
-                        style={{ color: C.muted, fontFamily: IN, fontSize: 12 }}
+                        style={{
+                          fontFamily: IN,
+                          fontSize: 11.5,
+                          color: C.muted,
+                        }}
                       >
-                        ₱{getFare(KIOSK, t.id)} official fare
+                        Terminal {t.id}
                       </div>
                     </div>
                   </div>
-                  <ChevronRight
-                    size={16}
-                    color={C.muted}
-                    style={{ flexShrink: 0 }}
-                  />
+                  <div style={{ textAlign: "right" }}>
+                    <div
+                      style={{
+                        fontFamily: GR,
+                        fontWeight: 700,
+                        fontSize: 14,
+                        color: C.green,
+                      }}
+                    >
+                      ₱{getFare(KIOSK, t.id)}
+                    </div>
+                    <div
+                      style={{ fontFamily: IN, fontSize: 10.5, color: C.muted }}
+                    >
+                      Official fare
+                    </div>
+                  </div>
                 </button>
               ))}
             </div>
-            <button
-              onClick={() => {
-                setStep("home");
-                setQuery("");
-                setResults([]);
-                setSnap(null);
-                setDroppedPin(null);
-              }}
-              style={{
-                marginTop: 14,
-                background: "transparent",
-                border: "none",
-                color: C.muted,
-                fontFamily: IN,
-                fontSize: 13.5,
-                cursor: "pointer",
-                padding: "8px 0",
-                width: "100%",
-              }}
-            >
-              ← Back
-            </button>
           </div>
         )}
 
         {step === "fare" && dest && (
           <div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 10,
-                marginBottom: 16,
-                fontFamily: IN,
-                fontSize: 13,
-              }}
-            >
-              <span style={{ color: C.text, fontWeight: 600 }}>
-                {originTerm.short}
-              </span>
-              <ArrowRight size={14} color={C.muted} />
-              <span style={{ color: C.green, fontWeight: 600 }}>
-                {dest.short}
-              </span>
-            </div>
-            <div
-              style={{
-                background: C.navy,
-                borderRadius: 18,
-                padding: "22px 20px",
-                textAlign: "center",
-                marginBottom: 16,
-              }}
-            >
-              <div
-                style={{
-                  color: "rgba(247,195,68,0.6)",
-                  fontFamily: GR,
-                  fontSize: 10,
-                  letterSpacing: 2,
-                  textTransform: "uppercase",
-                  marginBottom: 8,
-                }}
-              >
-                TODA-Approved Official Fare
-              </div>
-              <div
-                className="fare-display-amount"
-                style={{
-                  color: C.yellow,
-                  fontFamily: GR,
-                  fontWeight: 700,
-                  lineHeight: 1,
-                  fontSize: "clamp(48px, 14vw, 64px)",
-                }}
-              >
-                ₱{fare}
-                <span
-                  style={{ fontSize: "0.35em", opacity: 0.5, fontWeight: 400 }}
-                >
-                  .00
-                </span>
-              </div>
-              <div
-                style={{
-                  marginTop: 10,
-                  color: "rgba(255,255,255,0.4)",
-                  fontFamily: IN,
-                  fontSize: 11.5,
-                  lineHeight: 1.5,
-                }}
-              >
-                Government-mandated rate — drivers cannot charge more
-              </div>
-            </div>
-            <button
-              onClick={handleConfirm}
-              disabled={submitting}
-              style={{
-                width: "100%",
-                padding: "16px 0",
-                borderRadius: 14,
-                border: "none",
-                background: submitting ? C.muted : C.green,
-                color: "#fff",
-                fontSize: 15,
-                fontWeight: 700,
-                fontFamily: GR,
-                cursor: submitting ? "default" : "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                marginBottom: 8,
-                boxShadow: "0 4px 16px rgba(28,124,84,0.35)",
-              }}
-            >
-              <CheckCircle size={18} />{" "}
-              {submitting ? "Sending…" : "Confirm & Request Trip"}
-            </button>
-            <button
-              onClick={() => setStep("select")}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: C.muted,
-                fontFamily: IN,
-                fontSize: 13.5,
-                cursor: "pointer",
-                width: "100%",
-                padding: "8px 0",
-              }}
-            >
-              ← Change destination
-            </button>
-          </div>
-        )}
-
-        {step === "waiting" && (
-          <div style={{ textAlign: "center", padding: "12px 0" }}>
-            <div
-              style={{
-                position: "relative",
-                width: 64,
-                height: 64,
-                margin: "0 auto 18px",
-              }}
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  borderRadius: "50%",
-                  background: "rgba(28,124,84,0.15)",
-                  animation: "gv-pulse 1.6s ease-out infinite",
-                }}
-              />
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  borderRadius: "50%",
-                  background: C.greenLight,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Truck size={26} color={C.green} />
-              </div>
-            </div>
             <h2
               style={{
                 fontFamily: GR,
                 fontWeight: 700,
-                fontSize: "clamp(16px,4.5vw,19px)",
+                fontSize: 19,
                 color: C.text,
                 margin: "0 0 4px",
               }}
             >
-              Looking for a nearby driver…
+              Review Trip
             </h2>
             <p
               style={{
                 fontFamily: IN,
                 fontSize: 12.5,
                 color: C.muted,
-                margin: "0 0 18px",
+                margin: "0 0 14px",
               }}
             >
-              We'll notify you the moment a TODA driver accepts
+              Confirm your destination details
             </p>
+
             <div
               style={{
                 background: C.surface,
                 borderRadius: 14,
+                border: `1.5px solid ${C.border}`,
                 padding: "14px 16px",
-                border: `1px solid ${C.border}`,
+                marginBottom: 16,
+              }}
+            >
+              <SlipRow
+                label="From"
+                value={originTerm.name}
+                icon={<MapPin size={13} color={C.green} />}
+              />
+              <SlipRow
+                label="To"
+                value={dest.name}
+                icon={<MapPin size={13} color={C.danger} />}
+              />
+              <SlipRow
+                label="Official Fare"
+                value={`₱${fare}`}
+                accent
+                icon={<Shield size={13} color={C.green} />}
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => setStep("select")}
+                style={{
+                  flex: 1,
+                  padding: "14px",
+                  borderRadius: 14,
+                  border: `1.5px solid ${C.border}`,
+                  background: C.surface,
+                  color: C.text,
+                  fontFamily: GR,
+                  fontWeight: 600,
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                Back
+              </button>
+              <button
+                onClick={handleConfirm}
+                disabled={submitting}
+                style={{
+                  flex: 2,
+                  padding: "14px",
+                  borderRadius: 14,
+                  border: "none",
+                  background: C.yellow,
+                  color: C.navy,
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  opacity: submitting ? 0.7 : 1,
+                }}
+              >
+                {submitting ? "Sending..." : "Confirm & Wait"}{" "}
+                <ArrowRight size={16} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "waiting" && (
+          <div style={{ textAlign: "center", padding: "10px 0" }}>
+            <div
+              style={{
+                width: 60,
+                height: 60,
+                borderRadius: "50%",
+                background: C.greenLight,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto 14px",
+              }}
+            >
+              <Truck size={28} color={C.green} />
+            </div>
+            <h2
+              style={{
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 18,
+                color: C.text,
+                margin: "0 0 6px",
+              }}
+            >
+              Waiting for a driver to tap their card…
+            </h2>
+            <p
+              style={{
+                fontFamily: IN,
+                fontSize: 13,
+                color: C.muted,
+                margin: "0 0 16px",
+                lineHeight: 1.4,
+              }}
+            >
+              A driver must tap their NFC card on the reader to accept
+            </p>
+
+            <div
+              style={{
+                background: C.surface,
+                borderRadius: 14,
+                border: `1.5px solid ${C.border}`,
+                padding: "12px 16px",
+                marginBottom: 18,
                 textAlign: "left",
               }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  fontFamily: GR,
-                  fontSize: 13,
-                  marginBottom: 6,
-                }}
-              >
-                <span style={{ fontWeight: 600, color: C.text }}>
-                  {originTerm.short}
-                </span>
-                <ArrowRight size={13} color={C.muted} />
-                <span style={{ fontWeight: 600, color: C.navy }}>
-                  {dest?.short}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                }}
-              >
-                <span
-                  style={{ fontFamily: IN, fontSize: 11.5, color: C.muted }}
-                >
-                  Official fare
-                </span>
-                <span
-                  style={{
-                    fontFamily: GR,
-                    fontWeight: 700,
-                    fontSize: 14,
-                    color: C.green,
-                  }}
-                >
-                  ₱{fare}.00
-                </span>
-              </div>
+              <SlipRow
+                label="Destination"
+                value={dest?.short}
+                icon={<MapPin size={13} color={C.danger} />}
+              />
+              <SlipRow
+                label="Fare"
+                value={`₱${fare}`}
+                accent
+                icon={<Shield size={13} color={C.green} />}
+              />
+              <SlipRow
+                label="Status"
+                value="Waiting for driver acceptance"
+                mono
+                icon={<Hash size={13} color={C.muted} />}
+              />
             </div>
+
             <button
-              onClick={reset}
+              onClick={cancelWaiting}
               style={{
-                marginTop: 16,
                 background: "transparent",
-                border: "none",
-                color: C.muted,
-                fontFamily: IN,
+                border: `1.5px solid ${C.danger}`,
+                color: C.danger,
+                padding: "12px 24px",
+                borderRadius: 12,
+                fontFamily: GR,
+                fontWeight: 600,
                 fontSize: 13,
                 cursor: "pointer",
-                padding: "8px 0",
               }}
             >
-              Cancel request
+              Cancel Request
             </button>
           </div>
         )}
 
         {step === "success" && record && (
-          <div>
-            <div style={{ textAlign: "center", marginBottom: 14 }}>
-              <div
-                style={{
-                  width: 52,
-                  height: 52,
-                  borderRadius: "50%",
-                  background: C.green,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  margin: "0 auto 10px",
-                }}
-              >
-                <CheckCircle size={24} color="#fff" />
-              </div>
-              <h2
-                style={{
-                  fontFamily: GR,
-                  fontWeight: 700,
-                  fontSize: "clamp(16px,4.5vw,19px)",
-                  color: C.text,
-                  margin: "0 0 2px",
-                }}
-              >
-                Tricycle Dispatched!
-              </h2>
-              <p
-                style={{
-                  fontFamily: IN,
-                  fontSize: 12.5,
-                  color: C.muted,
-                  margin: 0,
-                }}
-              >
-                Screenshot your safety record
-              </p>
+          <div style={{ textAlign: "center", padding: "10px 0" }}>
+            <div
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: "50%",
+                background: C.greenLight,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto 12px",
+              }}
+            >
+              <CheckCircle size={28} color={C.green} />
             </div>
+            <h2
+              style={{
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 18,
+                color: C.text,
+                margin: "0 0 4px",
+              }}
+            >
+              Driver Assigned!
+            </h2>
+            <p
+              style={{
+                fontFamily: IN,
+                fontSize: 12.5,
+                color: C.muted,
+                margin: "0 0 16px",
+              }}
+            >
+              Please proceed to your assigned tricycle.
+            </p>
+
             <div
               style={{
                 background: C.surface,
                 borderRadius: 14,
-                padding: 16,
-                border: `1px solid ${C.border}`,
+                border: `1.5px solid ${C.border}`,
+                padding: "14px 16px",
+                marginBottom: 18,
+                textAlign: "left",
               }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: 12,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: GR,
-                    fontWeight: 700,
-                    fontSize: 12,
-                    color: C.navy,
-                  }}
-                >
-                  Passenger Safety Record
-                </span>
-                <Shield size={16} color={C.green} />
-              </div>
               <SlipRow
-                icon={<User size={13} />}
                 label="Driver"
-                value={record.driver}
-              />
-              <SlipRow
-                icon={<Truck size={13} />}
-                label="Unit No."
-                value={record.unit}
-                mono
-              />
-              <SlipRow
-                icon={<Hash size={13} />}
-                label="Plate No."
-                value={record.plate}
-                mono
-              />
-              <SlipRow
-                icon={<span style={{ fontSize: 12 }}>₱</span>}
-                label="Fare"
-                value={`₱${record.fare}.00`}
+                value={record.driver || "Assigned Driver"}
+                icon={<User size={13} color={C.green} />}
                 accent
               />
-              <div
-                style={{
-                  marginTop: 10,
-                  paddingTop: 10,
-                  borderTop: `1px dashed ${C.border}`,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: 11,
-                  color: C.muted,
-                  fontFamily: IN,
-                }}
-              >
-                <span>
-                  {record._id} · {fmtTime(record.ts)}
-                </span>
-                <span
-                  style={{ fontWeight: 700, color: C.green, fontFamily: GR }}
-                >
-                  VERIFIED ✓
-                </span>
-              </div>
+              <SlipRow
+                label="Tricycle Body No."
+                value={record.bodyNo || "TR-001"}
+                mono
+                icon={<Truck size={13} color={C.muted} />}
+              />
+              <SlipRow
+                label="Destination"
+                value={getTerm(record.destination)?.name || dest?.name}
+                icon={<MapPin size={13} color={C.danger} />}
+              />
+              <SlipRow
+                label="Fare"
+                value={`₱${record.fare || fare}`}
+                accent
+                icon={<Shield size={13} color={C.green} />}
+              />
             </div>
+
             <button
               onClick={reset}
               style={{
-                marginTop: 12,
                 width: "100%",
-                padding: "13px 0",
-                background: C.surface,
-                border: `1px solid ${C.border}`,
-                borderRadius: 12,
-                color: C.muted,
+                padding: "14px",
+                borderRadius: 14,
+                border: "none",
+                background: C.green,
+                color: "#fff",
                 fontFamily: GR,
-                fontSize: 13.5,
+                fontWeight: 700,
+                fontSize: 15,
                 cursor: "pointer",
+                boxShadow: "0 4px 16px rgba(16,185,129,0.3)",
               }}
             >
-              New Request
+              Done / Next Passenger
             </button>
           </div>
         )}
       </div>
-
-      {showSettings && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "flex-end",
-            justifyContent: "center",
-            zIndex: 2000,
-          }}
-          onClick={() => setShowSettings(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: "#fff",
-              borderRadius: "20px 20px 0 0",
-              width: "100%",
-              maxWidth: 480,
-              padding: "18px 20px calc(20px + var(--safe-bottom))",
-            }}
-          >
-            <div className="sheet-handle" />
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 16,
-              }}
-            >
-              <h3
-                style={{
-                  fontFamily: GR,
-                  fontWeight: 700,
-                  fontSize: 16,
-                  color: C.text,
-                  margin: 0,
-                }}
-              >
-                Kiosk Settings
-              </h3>
-              <button
-                onClick={() => setShowSettings(false)}
-                style={{
-                  background: C.surface,
-                  border: "none",
-                  borderRadius: 8,
-                  width: 30,
-                  height: 30,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                }}
-              >
-                <X size={15} color={C.muted} />
-              </button>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <div
-                style={{
-                  background: C.surface,
-                  borderRadius: 12,
-                  padding: "12px 14px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                }}
-              >
-                <span style={{ fontFamily: IN, fontSize: 13, color: C.muted }}>
-                  Terminal
-                </span>
-                <span
-                  style={{
-                    fontFamily: GR,
-                    fontWeight: 600,
-                    fontSize: 13,
-                    color: C.text,
-                  }}
-                >
-                  {originTerm.name}
-                </span>
-              </div>
-              <div
-                style={{
-                  background: C.surface,
-                  borderRadius: 12,
-                  padding: "12px 14px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                }}
-              >
-                <span style={{ fontFamily: IN, fontSize: 13, color: C.muted }}>
-                  Backend
-                </span>
-                <span
-                  style={{
-                    fontFamily: GR,
-                    fontWeight: 600,
-                    fontSize: 13,
-                    color: Object.keys(fares).length ? C.green : C.danger,
-                  }}
-                >
-                  {Object.keys(fares).length ? "● Connected" : "● Unreachable"}
-                </span>
-              </div>
-              <div
-                style={{
-                  background: C.surface,
-                  borderRadius: 12,
-                  padding: "12px 14px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                }}
-              >
-                <span style={{ fontFamily: IN, fontSize: 13, color: C.muted }}>
-                  App Version
-                </span>
-                <span
-                  style={{
-                    fontFamily: "monospace",
-                    fontSize: 12.5,
-                    color: C.text,
-                  }}
-                >
-                  v0.5.0
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showQueue && (
         <div
           style={{
             position: "fixed",
             inset: 0,
+            zIndex: 800,
             background: "rgba(0,0,0,0.5)",
             display: "flex",
             alignItems: "flex-end",
             justifyContent: "center",
-            zIndex: 2000,
           }}
           onClick={() => setShowQueue(false)}
         >
           <div
-            onClick={(e) => e.stopPropagation()}
             style={{
-              background: "#fff",
-              borderRadius: "20px 20px 0 0",
+              background: C.white,
               width: "100%",
-              maxWidth: 480,
-              padding: "18px 20px calc(20px + var(--safe-bottom))",
-              maxHeight: "70vh",
+              maxWidth: 500,
+              borderTopLeftRadius: 20,
+              borderTopRightRadius: 20,
+              padding: 20,
+              maxHeight: "80vh",
               overflowY: "auto",
             }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <div className="sheet-handle" />
             <div
               style={{
                 display: "flex",
-                alignItems: "center",
                 justifyContent: "space-between",
+                alignItems: "center",
                 marginBottom: 16,
               }}
             >
@@ -1655,30 +1437,24 @@ export default function KioskView() {
                   fontFamily: GR,
                   fontWeight: 700,
                   fontSize: 16,
-                  color: C.text,
                   margin: 0,
+                  color: C.text,
                 }}
               >
-                Waiting at {originTerm.short}
+                Waiting Queue ({pendingQueue.length})
               </h3>
               <button
                 onClick={() => setShowQueue(false)}
                 style={{
-                  background: C.surface,
+                  background: "transparent",
                   border: "none",
-                  borderRadius: 8,
-                  width: 30,
-                  height: 30,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
                   cursor: "pointer",
+                  color: C.muted,
                 }}
               >
-                <X size={15} color={C.muted} />
+                <X size={18} />
               </button>
             </div>
-
             {pendingQueue.length === 0 ? (
               <p
                 style={{
@@ -1689,104 +1465,81 @@ export default function KioskView() {
                   padding: "20px 0",
                 }}
               >
-                No one waiting right now.
+                No passengers currently waiting.
               </p>
             ) : (
-              <div
-                style={{ display: "flex", flexDirection: "column", gap: 10 }}
-              >
-                {pendingQueue.map((r, i) => {
-                  const wait = Math.round(
-                    (Date.now() - new Date(r.ts).getTime()) / 60000,
-                  );
-                  return (
-                    <div
-                      key={r._id}
-                      style={{
-                        background: i === 0 ? C.greenLight : C.surface,
-                        borderRadius: 12,
-                        padding: "12px 14px",
-                        border: `1px solid ${i === 0 ? C.green : C.border}`,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          marginBottom: 6,
-                        }}
-                      >
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {pendingQueue.map((r, idx) => (
+                  <div
+                    key={r._id || idx}
+                    style={{
+                      background: C.surface,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 12,
+                      padding: "12px 14px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center" }}>
                         <span
                           style={{
                             fontFamily: GR,
                             fontWeight: 700,
-                            fontSize: 13,
+                            fontSize: 13.5,
                             color: C.text,
                           }}
                         >
-                          {getTerm(r.destination)?.name}
+                          {getTerm(r.destination)?.name || r.destination}
                         </span>
-                        <span
-                          style={{
-                            fontFamily: GR,
-                            fontWeight: 700,
-                            fontSize: 13,
-                            color: C.green,
-                          }}
-                        >
-                          {"\u20B1"}
-                          {r.fare}.00
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontFamily: IN,
-                            fontSize: 11,
-                            color: C.muted,
-                          }}
-                        >
-                          {wait <= 0 ? "Just now" : `${wait}m waiting`}
-                        </span>
-                        {i === 0 && (
+                        {r.source === "kiosk" && (
                           <span
                             style={{
                               fontFamily: GR,
                               fontWeight: 700,
-                              fontSize: 10.5,
-                              color: C.greenDark,
+                              fontSize: 9.5,
+                              color: C.navy,
+                              background: C.yellow,
+                              borderRadius: 6,
+                              padding: "1px 6px",
+                              marginLeft: 6,
                               textTransform: "uppercase",
                             }}
                           >
-                            Next up
+                            Kiosk
                           </span>
                         )}
                       </div>
+                      <div
+                        style={{
+                          fontFamily: IN,
+                          fontSize: 11.5,
+                          color: C.muted,
+                          marginTop: 2,
+                        }}
+                      >
+                        Origin: {getTerm(r.origin)?.short || r.origin} ·{" "}
+                        {fmtTime
+                          ? fmtTime(r.ts)
+                          : new Date(r.ts).toLocaleTimeString()}
+                      </div>
                     </div>
-                  );
-                })}
+                    <div
+                      style={{
+                        fontFamily: GR,
+                        fontWeight: 700,
+                        fontSize: 14,
+                        color: C.green,
+                      }}
+                    >
+                      ₱{r.fare}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
-
-            <p
-              style={{
-                fontSize: 11,
-                color: C.muted,
-                fontFamily: IN,
-                margin: "14px 0 0",
-                textAlign: "center",
-              }}
-            >
-              Drivers: tap your card on the reader to accept the next waiting
-              passenger.
-            </p>
           </div>
         </div>
       )}

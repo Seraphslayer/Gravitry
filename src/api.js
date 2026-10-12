@@ -63,17 +63,23 @@ export const getTricycles = () => req("tricycles");
 
 // -- Dispatch requests ----------------------------------------------------------------
 // passenger is optional: { id, name } - attaches identity for logged-in passengers
-export const createRequest = (origin, destination, fare, passenger) =>
+export const createRequest = (origin, destination, fare, passenger, source) =>
   req("requests", {
     method: "POST",
     body: JSON.stringify({
       origin,
       destination,
       fare,
+      ...(source ? { source } : {}),
       ...(passenger
         ? { passengerId: passenger.id, passengerName: passenger.name }
         : {}),
     }),
+  });
+
+export const cancelRequest = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=cancel`, {
+    method: "POST",
   });
 
 export const getRequests = (params = {}) => {
