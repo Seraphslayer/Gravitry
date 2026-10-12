@@ -1,4 +1,6 @@
 // Run once to populate the database: node --env-file=.env scripts/seed.js
+// NOTE: re-running this resets demo drivers/admin (incl. passwords) and fares.
+// To change only the fares on a live database, use scripts/update-fares.js.
 import dns from "node:dns";
 dns.setServers(["8.8.8.8", "8.8.4.4"]); // Windows/Node SRV lookup fix — see api/_db.js
 
@@ -138,15 +140,21 @@ const tricycles = [
   },
 ];
 
-// ⚠️ Placeholder fares for the 3 real terminals — replace with the actual
-// TODA-approved rates for these routes before real deployment.
+// Official TODA fare matrix (posted at the terminals): regular per-person fare
+// is PHP 15 for the first kilometer, PHP 20 for succeeding 2-5 km. The special
+// trip / discounted columns are derived from the regular fare in api/fares.js
+// (special = x3, discounted = 80%), so only the regular fare is stored here.
+// All three Mary Cris Complex terminals are within the first kilometer of each
+// other, so every route is the first-km fare. Set a route to 20 if its actual
+// road distance is over 1 km.
+const FIRST_KM_FARE = 15;
 const fareEntries = [
-  ["T1", "T2", 15],
-  ["T1", "T3", 18],
-  ["T2", "T1", 15],
-  ["T2", "T3", 12],
-  ["T3", "T1", 18],
-  ["T3", "T2", 12],
+  ["T1", "T2", FIRST_KM_FARE],
+  ["T1", "T3", FIRST_KM_FARE],
+  ["T2", "T1", FIRST_KM_FARE],
+  ["T2", "T3", FIRST_KM_FARE],
+  ["T3", "T1", FIRST_KM_FARE],
+  ["T3", "T2", FIRST_KM_FARE],
 ].map(([origin, destination, fare]) => ({
   _id: `${origin}-${destination}`,
   origin,
