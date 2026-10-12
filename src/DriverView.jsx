@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import {
@@ -9,6 +9,8 @@ import {
   Star,
   Truck,
   LogOut,
+  MapPin,
+  Wifi,
 } from "lucide-react";
 import {
   C,
@@ -29,7 +31,27 @@ import {
 } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 
+// Used as the driver's reference point when live GPS isn't available
+// (permission denied, no signal, desktop browser, etc).
 const HOME_TERMINAL = "T1"; // TODO: make this per-driver once terminals are assignable in the DB
+
+// Straight-line distance in meters between two lat/lng points.
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function fmtDistance(m) {
+  if (m == null || !Number.isFinite(m)) return null;
+  if (m < 1000) return `${Math.round(m / 10) * 10 || 10} m away`;
+  return `${(m / 1000).toFixed(1)} km away`;
+}
 
 function makeDivIcon(color, pulse = false) {
   return L.divIcon({
@@ -56,15 +78,17 @@ function FlyTo({ target }) {
   return null;
 }
 
-function RequestCard({ req, onAccept, accepting }) {
+function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
   const wait = Math.round((Date.now() - new Date(req.ts).getTime()) / 60000);
+  const distLabel = fmtDistance(distance);
+  const nfcOnly = req.source === "kiosk"; // kiosk rides are accepted by card tap only
   return (
     <div
       style={{
         background: C.white,
         borderRadius: 14,
         padding: 16,
-        border: `1px solid ${C.border}`,
+        border: `1px solid ${isNearest ? C.green : C.border}`,
         boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
       }}
     >
@@ -76,18 +100,36 @@ function RequestCard({ req, onAccept, accepting }) {
           marginBottom: 12,
         }}
       >
-        <span
-          style={{
-            fontFamily: "monospace",
-            fontSize: 11,
-            background: C.surface,
-            borderRadius: 5,
-            padding: "2px 7px",
-            color: C.muted,
-          }}
-        >
-          {req._id}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{
+              fontFamily: "monospace",
+              fontSize: 11,
+              background: C.surface,
+              borderRadius: 5,
+              padding: "2px 7px",
+              color: C.muted,
+            }}
+          >
+            {req._id}
+          </span>
+          {isNearest && (
+            <span
+              style={{
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 9.5,
+                color: C.greenDark,
+                background: C.greenLight,
+                borderRadius: 6,
+                padding: "2px 6px",
+                textTransform: "uppercase",
+              }}
+            >
+              Nearest
+            </span>
+          )}
+        </div>
         <div
           style={{
             display: "flex",
@@ -106,7 +148,7 @@ function RequestCard({ req, onAccept, accepting }) {
           display: "flex",
           alignItems: "center",
           gap: 10,
-          marginBottom: 14,
+          marginBottom: distLabel ? 8 : 14,
         }}
       >
         <div style={{ flex: 1 }}>
@@ -155,6 +197,21 @@ function RequestCard({ req, onAccept, accepting }) {
           </div>
         </div>
       </div>
+      {distLabel && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            color: C.muted,
+            fontFamily: IN,
+            fontSize: 12,
+            marginBottom: 12,
+          }}
+        >
+          <MapPin size={12} color={C.green} /> Pickup is {distLabel}
+        </div>
+      )}
       <div
         style={{
           display: "flex",
@@ -172,27 +229,46 @@ function RequestCard({ req, onAccept, accepting }) {
         >
           ₱{req.fare}.00
         </span>
-        <button
-          onClick={() => onAccept(req)}
-          disabled={accepting}
-          style={{
-            background: accepting ? C.muted : C.green,
-            color: "#fff",
-            border: "none",
-            borderRadius: 10,
-            padding: "10px 20px",
-            fontFamily: GR,
-            fontSize: 13.5,
-            fontWeight: 700,
-            cursor: accepting ? "default" : "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            boxShadow: "0 3px 12px rgba(28,124,84,0.3)",
-          }}
-        >
-          <CheckCircle size={15} /> {accepting ? "Accepting…" : "Accept"}
-        </button>
+        {nfcOnly ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: C.surface,
+              color: C.muted,
+              borderRadius: 10,
+              padding: "9px 14px",
+              fontFamily: GR,
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <Wifi size={14} /> Tap card at kiosk
+          </div>
+        ) : (
+          <button
+            onClick={() => onAccept(req)}
+            disabled={accepting}
+            style={{
+              background: accepting ? C.muted : C.green,
+              color: "#fff",
+              border: "none",
+              borderRadius: 10,
+              padding: "10px 20px",
+              fontFamily: GR,
+              fontSize: 13.5,
+              fontWeight: 700,
+              cursor: accepting ? "default" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              boxShadow: "0 3px 12px rgba(28,124,84,0.3)",
+            }}
+          >
+            <CheckCircle size={15} /> {accepting ? "Accepting…" : "Accept"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -221,8 +297,10 @@ export default function DriverView() {
     if (!online) return;
     const tick = async () => {
       try {
+        // Drivers see pending rides from every terminal, not just their own.
+        // Sorting by distance happens below so the nearest ones come first.
         const [pendingReqs, dispatchedReqs] = await Promise.all([
-          getRequests({ status: "pending", origin: HOME_TERMINAL }),
+          getRequests({ status: "pending" }),
           getRequests({ status: "dispatched" }),
         ]);
         setPending(pendingReqs);
@@ -238,6 +316,32 @@ export default function DriverView() {
     return () => clearInterval(id);
   }, [online, user.driverId]);
 
+  // Reference point for "near me": live GPS if we have it, otherwise the
+  // driver's home terminal.
+  const refPoint = useMemo(() => {
+    if (myPosition) return { lat: myPosition.lat, lng: myPosition.lng };
+    const t = getTerm(HOME_TERMINAL);
+    return t ? { lat: t.lat, lng: t.lng } : null;
+  }, [myPosition]);
+
+  // Pending rides with their pickup distance, nearest first. Ties (and rides
+  // whose terminal is unknown) fall back to oldest first.
+  const sortedPending = useMemo(() => {
+    const withDist = pending.map((r) => {
+      const t = getTerm(r.origin);
+      const dist =
+        refPoint && t
+          ? distanceMeters(refPoint.lat, refPoint.lng, t.lat, t.lng)
+          : Infinity;
+      return { req: r, dist };
+    });
+    withDist.sort(
+      (a, b) =>
+        a.dist - b.dist || new Date(a.req.ts) - new Date(b.req.ts),
+    );
+    return withDist;
+  }, [pending, refPoint]);
+
   const destTerm = activeTrip ? getTerm(activeTrip.destination) : null;
   const flyTarget = destTerm || getTerm(HOME_TERMINAL);
 
@@ -247,8 +351,15 @@ export default function DriverView() {
       const doc = await acceptRequest(req._id, user.driverId);
       setActiveTrip(doc);
       setPending((p) => p.filter((r) => r._id !== req._id));
-    } catch {
-      setError("That request was just taken by another driver.");
+    } catch (err) {
+      const msg = err.message
+        ? err.message.replace(/^API .* failed: /, "")
+        : "";
+      setError(
+        /NFC/i.test(msg)
+          ? msg
+          : "That request was just taken by another driver.",
+      );
     }
     setAccepting(false);
   };
@@ -621,8 +732,8 @@ export default function DriverView() {
                   margin: 0,
                 }}
               >
-                Nearby Requests
-                {pending.length > 0 && (
+                Ride Requests
+                {sortedPending.length > 0 && (
                   <span
                     style={{
                       marginLeft: 6,
@@ -633,16 +744,16 @@ export default function DriverView() {
                       fontSize: 11,
                     }}
                   >
-                    {pending.length}
+                    {sortedPending.length}
                   </span>
                 )}
               </h3>
               <span style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
-                Live · every 4s
+                Nearest first · every 4s
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {pending.length === 0 && (
+              {sortedPending.length === 0 && (
                 <div
                   style={{
                     background: C.surface,
@@ -664,12 +775,14 @@ export default function DriverView() {
                   </p>
                 </div>
               )}
-              {pending.map((req) => (
+              {sortedPending.map(({ req, dist }, i) => (
                 <RequestCard
                   key={req._id}
                   req={req}
                   onAccept={handleAccept}
                   accepting={accepting}
+                  distance={dist}
+                  isNearest={i === 0 && sortedPending.length > 1}
                 />
               ))}
             </div>
