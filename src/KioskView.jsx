@@ -24,6 +24,8 @@ import {
   Minimize2,
   Maximize2,
   Users,
+  BadgePercent,
+  Wifi,
 } from "lucide-react";
 import {
   C,
@@ -35,6 +37,10 @@ import {
   fmtTime,
   TrikeIcon,
   nearestTerminal,
+  DISCOUNTS,
+  DISCOUNT_KEYS,
+  discountLabel,
+  discountedFare,
 } from "./shared.jsx";
 import {
   getFares,
@@ -75,7 +81,6 @@ function FlyToTerminal({ target }) {
   }, [target, map]);
   return null;
 }
-
 function MapClickCatcher({ active, onPick }) {
   useMapEvents({
     click(e) {
@@ -84,7 +89,10 @@ function MapClickCatcher({ active, onPick }) {
   });
   return null;
 }
-
+// Leaflet computes tile layout based on its container's size at mount time.
+// Since the map-zone's height changes whenever the sheet collapses/expands
+// (it's the flexible one in the column layout), Leaflet needs to be told to
+// recalculate on every such transition, or tiles render blank/offset.
 function MapVisibilitySync({ trigger }) {
   const map = useMap();
   useEffect(() => {
@@ -138,6 +146,10 @@ export default function KioskView() {
   const [record, setRecord] = useState(null);
   const [myRequestId, setMyRequestId] = useState(null);
   const [fares, setFares] = useState({});
+  // Discount the passenger says they qualify for ("student" | "senior" | "pwd"
+  // or null). It is only a claim: the driver checks the ID in person and taps
+  // their NFC card to confirm it.
+  const [discountClaim, setDiscountClaim] = useState(null);
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -149,32 +161,47 @@ export default function KioskView() {
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
-  const [nfcNotice, setNfcNotice] = useState(null);
+  const [nfcNotice, setNfcNotice] = useState(null); // { type: "success" | "error", text }
   const [pendingQueue, setPendingQueue] = useState([]);
   const [showQueue, setShowQueue] = useState(false);
 
+  // NFC keystroke-capture bookkeeping. The reader emulates a keyboard, so we
+  // distinguish a card tap from a real human keypress by typing speed - the
+  // reader sends characters far faster than anyone could type by hand.
   const scanBufferRef = useRef("");
   const lastKeyTimeRef = useRef(0);
   const lastAcceptedRef = useRef({ id: null, time: 0 });
 
+  // No GPS on the kiosk: it is fixed at its own terminal (KIOSK below), so the
+  // origin is always known and passengers only choose a destination.
+
   const originTerm = getTerm(KIOSK);
   const dests = TERMINALS.filter((t) => t.id !== KIOSK);
   const getFare = (o, d) => fares[`${o}-${d}`] ?? 0;
-  const fare = dest ? getFare(KIOSK, dest.id) : 0;
+  const baseFare = dest ? getFare(KIOSK, dest.id) : 0;
+  const fare = discountClaim ? discountedFare(baseFare) : baseFare;
+
+  // A kiosk ride is already waiting for a driver's card tap, so no new one
+  // may be created until it is accepted (the server enforces this too).
   const kioskBusy = pendingQueue.some((r) => r.source === "kiosk");
 
+  // Load fares from backend on mount
   useEffect(() => {
     getFares()
       .then(setFares)
       .catch(() => setError("Could not load fares. Check your connection."));
   }, []);
 
+  // Poll the pending queue for this terminal, so drivers standing at the
+  // kiosk (or anyone checking) can see who's waiting - independent of
+  // whether a passenger is mid-booking on this same screen right now.
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
         const list = await getRequests({ status: "pending", origin: KIOSK });
         if (!cancelled) {
+          // Kiosk-created rides first, then oldest first within each group
           const next = list
             .slice()
             .sort(
@@ -183,7 +210,12 @@ export default function KioskView() {
                   (b.source === "kiosk" ? 0 : 1) ||
                 new Date(a.ts) - new Date(b.ts),
             );
-          setPendingQueue(next);
+          setPendingQueue((prev) =>
+            prev.length === next.length &&
+            prev.every((r, i) => r._id === next[i]._id)
+              ? prev
+              : next,
+          );
         }
       } catch {
         /* keep last known list */
@@ -195,16 +227,27 @@ export default function KioskView() {
       cancelled = true;
       clearInterval(id);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Collapse the bottom sheet down to just its handle whenever pin-drop mode
+  // starts, so the map gets the screen room needed to place a precise pin -
+  // and restore the sheet automatically once a pin is placed or cancelled.
+  // The manual toggle button below still works freely outside of this.
   useEffect(() => {
     setSheetCollapsed(pinMode);
   }, [pinMode]);
 
+  // NFC card-tap capture. The reader is a keyboard-emulation USB device: it
+  // "types" the card's digits and an Enter, extremely fast (much faster than
+  // a human). We only treat a burst as a tap when the inter-key timing is
+  // fast throughout - anything at normal typing speed is left completely
+  // alone (e.g. the destination search box below still works normally).
   useEffect(() => {
     const FAST_THRESHOLD_MS = 50;
     const MIN_DIGITS = 6;
     const MAX_DIGITS = 20;
+    const DEBOUNCE_MS = 5000;
 
     const handleKeyDown = (e) => {
       const now = performance.now();
@@ -214,9 +257,15 @@ export default function KioskView() {
 
       if (isDigit) {
         if (delta < FAST_THRESHOLD_MS && scanBufferRef.current.length > 0) {
+          // Continuing a fast burst - almost certainly the reader, not a
+          // person. Swallow the keystroke so it never lands in a focused
+          // input, and keep collecting it.
           e.preventDefault();
           scanBufferRef.current += e.key;
         } else {
+          // Either the very first character of a possible burst, or a slow
+          // (human) keypress. We can't yet tell which - start a fresh
+          // buffer but don't intercept the keystroke itself.
           scanBufferRef.current = e.key;
         }
         return;
@@ -236,11 +285,13 @@ export default function KioskView() {
         return;
       }
 
+      // Any other key breaks a burst in progress.
       scanBufferRef.current = "";
     };
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleNfcTap = async (nfcId) => {
@@ -249,14 +300,18 @@ export default function KioskView() {
       lastAcceptedRef.current.id === nfcId &&
       now - lastAcceptedRef.current.time < 5000
     ) {
-      return;
+      return; // same card still sitting near the reader - ignore repeat reads
     }
     lastAcceptedRef.current = { id: nfcId, time: now };
     try {
       const doc = await acceptViaNfc(nfcId, KIOSK);
       setNfcNotice({
         type: "success",
-        text: `Driver ${doc.driver} accepted a trip to ${getTerm(doc.destination)?.short}`,
+        text: `${doc.driver} · ride to ${getTerm(doc.destination)?.short} recorded${
+          doc.discountApplied
+            ? ` · ${discountLabel(doc.discountType)} discount applied`
+            : ""
+        }`,
       });
     } catch (err) {
       setNfcNotice({
@@ -268,11 +323,20 @@ export default function KioskView() {
     setTimeout(() => setNfcNotice(null), 4000);
   };
 
+  // Poll for driver acceptance while waiting. A kiosk ride is recorded as
+  // completed the moment the driver taps their card, so anything that is no
+  // longer "pending" (other than a cancelled / expired request) means a driver
+  // took it.
   useEffect(() => {
     if (step !== "waiting" || !myRequestId) return;
     const tick = async () => {
       try {
         const doc = await getRequestById(myRequestId);
+        if (doc.status === "cancelled") {
+          reset();
+          setError("Your request timed out. Please request again.");
+          return;
+        }
         if (doc.status !== "pending") {
           setRecord(doc);
           setStep("success");
@@ -284,8 +348,10 @@ export default function KioskView() {
     tick();
     const id = setInterval(tick, 3000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, myRequestId]);
 
+  // Nominatim search
   useEffect(() => {
     if (query.trim().length < 3) {
       setResults([]);
@@ -295,9 +361,7 @@ export default function KioskView() {
       setSearching(true);
       try {
         const [clat, clng] = COMPLEX_CENTER;
-        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-          query,
-        )}&limit=5&viewbox=${clng - 0.02},${clat + 0.02},${clng + 0.02},${clat - 0.02}&bounded=0`;
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&viewbox=${clng - 0.02},${clat + 0.02},${clng + 0.02},${clat - 0.02}&bounded=0`;
         const res = await fetch(url, { headers: { "Accept-Language": "en" } });
         setResults((await res.json()) || []);
       } catch {
@@ -329,7 +393,14 @@ export default function KioskView() {
     setSubmitting(true);
     setError(null);
     try {
-      const req = await createRequest(KIOSK, dest.id, fare, null, "kiosk");
+      const req = await createRequest(
+        KIOSK,
+        dest.id,
+        fare,
+        null,
+        "kiosk",
+        discountClaim,
+      );
       setMyRequestId(req._id);
       setStep("waiting");
     } catch (err) {
@@ -343,6 +414,22 @@ export default function KioskView() {
     setSubmitting(false);
   };
 
+  const reset = () => {
+    setStep("home");
+    setDest(null);
+    setRecord(null);
+    setMyRequestId(null);
+    setDiscountClaim(null);
+    setQuery("");
+    setResults([]);
+    setPinMode(false);
+    setDroppedPin(null);
+    setSnap(null);
+    setError(null);
+  };
+
+  // Cancel the waiting request for real, so the kiosk is free again and the
+  // ride stops showing up in the queue.
   const cancelWaiting = async () => {
     try {
       if (myRequestId) await cancelRequest(myRequestId);
@@ -350,19 +437,6 @@ export default function KioskView() {
       /* already accepted or gone - reset anyway */
     }
     reset();
-  };
-
-  const reset = () => {
-    setStep("home");
-    setDest(null);
-    setRecord(null);
-    setMyRequestId(null);
-    setQuery("");
-    setResults([]);
-    setPinMode(false);
-    setDroppedPin(null);
-    setSnap(null);
-    setError(null);
   };
 
   const flyTarget = dest || originTerm;
@@ -701,7 +775,6 @@ export default function KioskView() {
                 <Shield size={20} color={C.green} />
               </div>
             </div>
-
             {kioskBusy && (
               <div
                 style={{
@@ -747,7 +820,6 @@ export default function KioskView() {
               </span>
               <ChevronRight size={20} />
             </button>
-
             <div
               style={{
                 display: "flex",
@@ -779,6 +851,19 @@ export default function KioskView() {
                 }}
               >
                 <User size={13} color={C.green} /> Driver ID verified
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontSize: 11.5,
+                  color: C.muted,
+                  fontFamily: IN,
+                }}
+              >
+                <BadgePercent size={13} color={C.green} /> Student / Senior /
+                PWD discount
               </div>
             </div>
           </div>
@@ -1059,186 +1144,303 @@ export default function KioskView() {
                   >
                     <div
                       style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: "50%",
+                        width: 36,
+                        height: 36,
+                        borderRadius: 10,
                         background: C.greenLight,
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        color: C.green,
-                        fontFamily: GR,
-                        fontWeight: 700,
-                        fontSize: 12,
+                        flexShrink: 0,
                       }}
                     >
-                      {t.short}
+                      <MapPin size={16} color={C.green} />
                     </div>
                     <div>
                       <div
                         style={{
-                          fontFamily: GR,
-                          fontWeight: 700,
-                          fontSize: 13.5,
                           color: C.text,
+                          fontFamily: GR,
+                          fontWeight: 600,
+                          fontSize: 14,
                         }}
                       >
                         {t.name}
                       </div>
                       <div
-                        style={{
-                          fontFamily: IN,
-                          fontSize: 11.5,
-                          color: C.muted,
-                        }}
+                        style={{ color: C.muted, fontFamily: IN, fontSize: 12 }}
                       >
-                        Terminal {t.id}
+                        ₱{getFare(KIOSK, t.id)} official fare
                       </div>
                     </div>
                   </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div
-                      style={{
-                        fontFamily: GR,
-                        fontWeight: 700,
-                        fontSize: 14,
-                        color: C.green,
-                      }}
-                    >
-                      ₱{getFare(KIOSK, t.id)}
-                    </div>
-                    <div
-                      style={{ fontFamily: IN, fontSize: 10.5, color: C.muted }}
-                    >
-                      Official fare
-                    </div>
-                  </div>
+                  <ChevronRight
+                    size={16}
+                    color={C.muted}
+                    style={{ flexShrink: 0 }}
+                  />
                 </button>
               ))}
             </div>
+            <button
+              onClick={() => {
+                setStep("home");
+                setQuery("");
+                setResults([]);
+                setSnap(null);
+                setDroppedPin(null);
+              }}
+              style={{
+                marginTop: 14,
+                background: "transparent",
+                border: "none",
+                color: C.muted,
+                fontFamily: IN,
+                fontSize: 13.5,
+                cursor: "pointer",
+                padding: "8px 0",
+                width: "100%",
+              }}
+            >
+              ← Back
+            </button>
           </div>
         )}
 
         {step === "fare" && dest && (
           <div>
-            <h2
-              style={{
-                fontFamily: GR,
-                fontWeight: 700,
-                fontSize: 19,
-                color: C.text,
-                margin: "0 0 4px",
-              }}
-            >
-              Review Trip
-            </h2>
-            <p
-              style={{
-                fontFamily: IN,
-                fontSize: 12.5,
-                color: C.muted,
-                margin: "0 0 14px",
-              }}
-            >
-              Confirm your destination details
-            </p>
-
             <div
               style={{
-                background: C.surface,
-                borderRadius: 14,
-                border: `1.5px solid ${C.border}`,
-                padding: "14px 16px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 10,
                 marginBottom: 16,
+                fontFamily: IN,
+                fontSize: 13,
               }}
             >
-              <SlipRow
-                label="From"
-                value={originTerm.name}
-                icon={<MapPin size={13} color={C.green} />}
-              />
-              <SlipRow
-                label="To"
-                value={dest.name}
-                icon={<MapPin size={13} color={C.danger} />}
-              />
-              <SlipRow
-                label="Official Fare"
-                value={`₱${fare}`}
-                accent
-                icon={<Shield size={13} color={C.green} />}
-              />
+              <span style={{ color: C.text, fontWeight: 600 }}>
+                {originTerm.short}
+              </span>
+              <ArrowRight size={14} color={C.muted} />
+              <span style={{ color: C.green, fontWeight: 600 }}>
+                {dest.short}
+              </span>
             </div>
-
-            <div style={{ display: "flex", gap: 10 }}>
-              <button
-                onClick={() => setStep("select")}
+            <div
+              style={{
+                background: C.navy,
+                borderRadius: 18,
+                padding: "22px 20px",
+                textAlign: "center",
+                marginBottom: 14,
+              }}
+            >
+              <div
                 style={{
-                  flex: 1,
-                  padding: "14px",
-                  borderRadius: 14,
-                  border: `1.5px solid ${C.border}`,
-                  background: C.surface,
-                  color: C.text,
+                  color: "rgba(247,195,68,0.6)",
                   fontFamily: GR,
-                  fontWeight: 600,
-                  fontSize: 14,
-                  cursor: "pointer",
+                  fontSize: 10,
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                  marginBottom: 8,
                 }}
               >
-                Back
-              </button>
-              <button
-                onClick={handleConfirm}
-                disabled={submitting}
+                {discountClaim
+                  ? `${discountLabel(discountClaim)} Discount Fare`
+                  : "TODA-Approved Official Fare"}
+              </div>
+              <div
+                className="fare-display-amount"
                 style={{
-                  flex: 2,
-                  padding: "14px",
-                  borderRadius: 14,
-                  border: "none",
-                  background: C.yellow,
-                  color: C.navy,
+                  color: C.yellow,
                   fontFamily: GR,
                   fontWeight: 700,
-                  fontSize: 14,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 8,
-                  opacity: submitting ? 0.7 : 1,
+                  lineHeight: 1,
+                  fontSize: "clamp(48px, 14vw, 64px)",
                 }}
               >
-                {submitting ? "Sending..." : "Confirm & Wait"}{" "}
-                <ArrowRight size={16} />
-              </button>
+                ₱{fare}
+                <span
+                  style={{ fontSize: "0.35em", opacity: 0.5, fontWeight: 400 }}
+                >
+                  .00
+                </span>
+              </div>
+              {discountClaim && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    color: "rgba(255,255,255,0.6)",
+                    fontFamily: IN,
+                    fontSize: 12,
+                  }}
+                >
+                  Regular fare ₱{baseFare}.00 · 20% off
+                </div>
+              )}
+              <div
+                style={{
+                  marginTop: 10,
+                  color: "rgba(255,255,255,0.4)",
+                  fontFamily: IN,
+                  fontSize: 11.5,
+                  lineHeight: 1.5,
+                }}
+              >
+                Government-mandated rate — drivers cannot charge more
+              </div>
             </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <div
+                style={{
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: 12,
+                  color: C.text,
+                  marginBottom: 6,
+                }}
+              >
+                Discount (Student, Senior Citizen, PWD)
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {[
+                  [null, "No discount"],
+                  ...DISCOUNT_KEYS.map((k) => [k, DISCOUNTS[k].label]),
+                ].map(([key, label]) => {
+                  const on = discountClaim === key;
+                  return (
+                    <button
+                      key={key || "none"}
+                      onClick={() => setDiscountClaim(key)}
+                      style={{
+                        padding: "9px 14px",
+                        borderRadius: 20,
+                        border: `1.5px solid ${on ? C.green : C.border}`,
+                        background: on ? C.greenLight : "#fff",
+                        color: on ? C.greenDark : C.text,
+                        fontFamily: GR,
+                        fontWeight: 600,
+                        fontSize: 12.5,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              {discountClaim && (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                    marginTop: 10,
+                    background: "#FEF3C7",
+                    color: "#92400E",
+                    borderRadius: 12,
+                    padding: "10px 12px",
+                    fontFamily: IN,
+                    fontSize: 12,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <Wifi size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>
+                    Show your {DISCOUNTS[discountClaim].idName} to the driver.
+                    The driver taps their NFC card to confirm your ID and apply
+                    the discount.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={handleConfirm}
+              disabled={submitting}
+              style={{
+                width: "100%",
+                padding: "16px 0",
+                borderRadius: 14,
+                border: "none",
+                background: submitting ? C.muted : C.green,
+                color: "#fff",
+                fontSize: 15,
+                fontWeight: 700,
+                fontFamily: GR,
+                cursor: submitting ? "default" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                marginBottom: 8,
+                boxShadow: "0 4px 16px rgba(28,124,84,0.35)",
+              }}
+            >
+              <CheckCircle size={18} />{" "}
+              {submitting ? "Sending…" : "Confirm & Request Trip"}
+            </button>
+            <button
+              onClick={() => setStep("select")}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: C.muted,
+                fontFamily: IN,
+                fontSize: 13.5,
+                cursor: "pointer",
+                width: "100%",
+                padding: "8px 0",
+              }}
+            >
+              ← Change destination
+            </button>
           </div>
         )}
 
         {step === "waiting" && (
-          <div style={{ textAlign: "center", padding: "10px 0" }}>
+          <div style={{ textAlign: "center", padding: "12px 0" }}>
             <div
               style={{
-                width: 60,
-                height: 60,
-                borderRadius: "50%",
-                background: C.greenLight,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                margin: "0 auto 14px",
+                position: "relative",
+                width: 64,
+                height: 64,
+                margin: "0 auto 18px",
               }}
             >
-              <Truck size={28} color={C.green} />
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: "50%",
+                  background: "rgba(28,124,84,0.15)",
+                  animation: "gv-pulse 1.6s ease-out infinite",
+                }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  borderRadius: "50%",
+                  background: C.greenLight,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Truck size={26} color={C.green} />
+              </div>
             </div>
             <h2
               style={{
                 fontFamily: GR,
                 fontWeight: 700,
-                fontSize: 18,
+                fontSize: "clamp(16px,4.5vw,19px)",
                 color: C.text,
-                margin: "0 0 6px",
+                margin: "0 0 4px",
               }}
             >
               Waiting for a driver to tap their card…
@@ -1246,189 +1448,255 @@ export default function KioskView() {
             <p
               style={{
                 fontFamily: IN,
-                fontSize: 13,
+                fontSize: 12.5,
                 color: C.muted,
-                margin: "0 0 16px",
-                lineHeight: 1.4,
+                margin: "0 0 18px",
               }}
             >
-              A driver must tap their NFC card on the reader to accept
+              {discountClaim
+                ? `Driver: check the passenger's ${DISCOUNTS[discountClaim].idName}, then tap your NFC card on the reader to confirm the ride and the discount.`
+                : "A driver must tap their NFC card on the reader to accept your ride."}
             </p>
-
             <div
               style={{
                 background: C.surface,
                 borderRadius: 14,
-                border: `1.5px solid ${C.border}`,
-                padding: "12px 16px",
-                marginBottom: 18,
+                padding: "14px 16px",
+                border: `1px solid ${C.border}`,
                 textAlign: "left",
               }}
             >
-              <SlipRow
-                label="Destination"
-                value={dest?.short}
-                icon={<MapPin size={13} color={C.danger} />}
-              />
-              <SlipRow
-                label="Fare"
-                value={`₱${fare}`}
-                accent
-                icon={<Shield size={13} color={C.green} />}
-              />
-              <SlipRow
-                label="Status"
-                value="Waiting for driver acceptance"
-                mono
-                icon={<Hash size={13} color={C.muted} />}
-              />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  fontFamily: GR,
+                  fontSize: 13,
+                  marginBottom: 6,
+                }}
+              >
+                <span style={{ fontWeight: 600, color: C.text }}>
+                  {originTerm.short}
+                </span>
+                <ArrowRight size={13} color={C.muted} />
+                <span style={{ fontWeight: 600, color: C.navy }}>
+                  {dest?.short}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span
+                  style={{ fontFamily: IN, fontSize: 11.5, color: C.muted }}
+                >
+                  {discountClaim
+                    ? `${discountLabel(discountClaim)} discount fare`
+                    : "Official fare"}
+                </span>
+                <span
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 14,
+                    color: C.green,
+                  }}
+                >
+                  ₱{fare}.00
+                </span>
+              </div>
             </div>
-
             <button
               onClick={cancelWaiting}
               style={{
+                marginTop: 16,
                 background: "transparent",
-                border: `1.5px solid ${C.danger}`,
-                color: C.danger,
-                padding: "12px 24px",
-                borderRadius: 12,
-                fontFamily: GR,
-                fontWeight: 600,
+                border: "none",
+                color: C.muted,
+                fontFamily: IN,
                 fontSize: 13,
                 cursor: "pointer",
+                padding: "8px 0",
               }}
             >
-              Cancel Request
+              Cancel request
             </button>
           </div>
         )}
 
         {step === "success" && record && (
-          <div style={{ textAlign: "center", padding: "10px 0" }}>
-            <div
-              style={{
-                width: 56,
-                height: 56,
-                borderRadius: "50%",
-                background: C.greenLight,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                margin: "0 auto 12px",
-              }}
-            >
-              <CheckCircle size={28} color={C.green} />
+          <div>
+            <div style={{ textAlign: "center", marginBottom: 14 }}>
+              <div
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: "50%",
+                  background: C.green,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  margin: "0 auto 10px",
+                }}
+              >
+                <CheckCircle size={24} color="#fff" />
+              </div>
+              <h2
+                style={{
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: "clamp(16px,4.5vw,19px)",
+                  color: C.text,
+                  margin: "0 0 2px",
+                }}
+              >
+                Ride Confirmed!
+              </h2>
+              <p
+                style={{
+                  fontFamily: IN,
+                  fontSize: 12.5,
+                  color: C.muted,
+                  margin: 0,
+                }}
+              >
+                Screenshot your safety record
+              </p>
             </div>
-            <h2
-              style={{
-                fontFamily: GR,
-                fontWeight: 700,
-                fontSize: 18,
-                color: C.text,
-                margin: "0 0 4px",
-              }}
-            >
-              Driver Assigned!
-            </h2>
-            <p
-              style={{
-                fontFamily: IN,
-                fontSize: 12.5,
-                color: C.muted,
-                margin: "0 0 16px",
-              }}
-            >
-              Please proceed to your assigned tricycle.
-            </p>
-
             <div
               style={{
                 background: C.surface,
                 borderRadius: 14,
-                border: `1.5px solid ${C.border}`,
-                padding: "14px 16px",
-                marginBottom: 18,
-                textAlign: "left",
+                padding: 16,
+                border: `1px solid ${C.border}`,
               }}
             >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 12,
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 12,
+                    color: C.navy,
+                  }}
+                >
+                  Passenger Safety Record
+                </span>
+                <Shield size={16} color={C.green} />
+              </div>
               <SlipRow
+                icon={<User size={13} />}
                 label="Driver"
-                value={record.driver || "Assigned Driver"}
-                icon={<User size={13} color={C.green} />}
-                accent
+                value={record.driver}
               />
               <SlipRow
-                label="Tricycle Body No."
-                value={record.bodyNo || "TR-001"}
+                icon={<Truck size={13} />}
+                label="Unit No."
+                value={record.unit}
                 mono
-                icon={<Truck size={13} color={C.muted} />}
               />
               <SlipRow
-                label="Destination"
-                value={getTerm(record.destination)?.name || dest?.name}
-                icon={<MapPin size={13} color={C.danger} />}
+                icon={<Hash size={13} />}
+                label="Plate No."
+                value={record.plate}
+                mono
               />
+              {record.discountApplied && (
+                <SlipRow
+                  icon={<BadgePercent size={13} />}
+                  label="Discount"
+                  value={`${discountLabel(record.discountType)} (20% off)`}
+                />
+              )}
               <SlipRow
+                icon={<span style={{ fontSize: 12 }}>₱</span>}
                 label="Fare"
-                value={`₱${record.fare || fare}`}
+                value={`₱${record.fare}.00`}
                 accent
-                icon={<Shield size={13} color={C.green} />}
               />
+              <div
+                style={{
+                  marginTop: 10,
+                  paddingTop: 10,
+                  borderTop: `1px dashed ${C.border}`,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 11,
+                  color: C.muted,
+                  fontFamily: IN,
+                }}
+              >
+                <span>
+                  {record._id} · {fmtTime(record.ts)}
+                </span>
+                <span
+                  style={{ fontWeight: 700, color: C.green, fontFamily: GR }}
+                >
+                  VERIFIED ✓
+                </span>
+              </div>
             </div>
-
             <button
               onClick={reset}
               style={{
+                marginTop: 12,
                 width: "100%",
-                padding: "14px",
-                borderRadius: 14,
-                border: "none",
-                background: C.green,
-                color: "#fff",
+                padding: "13px 0",
+                background: C.surface,
+                border: `1px solid ${C.border}`,
+                borderRadius: 12,
+                color: C.muted,
                 fontFamily: GR,
-                fontWeight: 700,
-                fontSize: 15,
+                fontSize: 13.5,
                 cursor: "pointer",
-                boxShadow: "0 4px 16px rgba(16,185,129,0.3)",
               }}
             >
-              Done / Next Passenger
+              New Request
             </button>
           </div>
         )}
       </div>
 
-      {showQueue && (
+      {showSettings && (
         <div
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 800,
             background: "rgba(0,0,0,0.5)",
             display: "flex",
             alignItems: "flex-end",
             justifyContent: "center",
+            zIndex: 2000,
           }}
-          onClick={() => setShowQueue(false)}
+          onClick={() => setShowSettings(false)}
         >
           <div
-            style={{
-              background: C.white,
-              width: "100%",
-              maxWidth: 500,
-              borderTopLeftRadius: 20,
-              borderTopRightRadius: 20,
-              padding: 20,
-              maxHeight: "80vh",
-              overflowY: "auto",
-            }}
             onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              borderRadius: "20px 20px 0 0",
+              width: "100%",
+              maxWidth: 480,
+              padding: "18px 20px calc(20px + var(--safe-bottom))",
+            }}
           >
+            <div className="sheet-handle" />
             <div
               style={{
                 display: "flex",
-                justifyContent: "space-between",
                 alignItems: "center",
+                justifyContent: "space-between",
                 marginBottom: 16,
               }}
             >
@@ -1437,24 +1705,166 @@ export default function KioskView() {
                   fontFamily: GR,
                   fontWeight: 700,
                   fontSize: 16,
-                  margin: 0,
                   color: C.text,
+                  margin: 0,
                 }}
               >
-                Waiting Queue ({pendingQueue.length})
+                Kiosk Settings
+              </h3>
+              <button
+                onClick={() => setShowSettings(false)}
+                style={{
+                  background: C.surface,
+                  border: "none",
+                  borderRadius: 8,
+                  width: 30,
+                  height: 30,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                }}
+              >
+                <X size={15} color={C.muted} />
+              </button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div
+                style={{
+                  background: C.surface,
+                  borderRadius: 12,
+                  padding: "12px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontFamily: IN, fontSize: 13, color: C.muted }}>
+                  Terminal
+                </span>
+                <span
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 600,
+                    fontSize: 13,
+                    color: C.text,
+                  }}
+                >
+                  {originTerm.name}
+                </span>
+              </div>
+              <div
+                style={{
+                  background: C.surface,
+                  borderRadius: 12,
+                  padding: "12px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontFamily: IN, fontSize: 13, color: C.muted }}>
+                  Backend
+                </span>
+                <span
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 600,
+                    fontSize: 13,
+                    color: Object.keys(fares).length ? C.green : C.danger,
+                  }}
+                >
+                  {Object.keys(fares).length ? "● Connected" : "● Unreachable"}
+                </span>
+              </div>
+              <div
+                style={{
+                  background: C.surface,
+                  borderRadius: 12,
+                  padding: "12px 14px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span style={{ fontFamily: IN, fontSize: 13, color: C.muted }}>
+                  App Version
+                </span>
+                <span
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 12.5,
+                    color: C.text,
+                  }}
+                >
+                  v0.6.0
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showQueue && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "center",
+            zIndex: 2000,
+          }}
+          onClick={() => setShowQueue(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              borderRadius: "20px 20px 0 0",
+              width: "100%",
+              maxWidth: 480,
+              padding: "18px 20px calc(20px + var(--safe-bottom))",
+              maxHeight: "70vh",
+              overflowY: "auto",
+            }}
+          >
+            <div className="sheet-handle" />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 16,
+              }}
+            >
+              <h3
+                style={{
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: 16,
+                  color: C.text,
+                  margin: 0,
+                }}
+              >
+                Waiting at {originTerm.short}
               </h3>
               <button
                 onClick={() => setShowQueue(false)}
                 style={{
-                  background: "transparent",
+                  background: C.surface,
                   border: "none",
+                  borderRadius: 8,
+                  width: 30,
+                  height: 30,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                   cursor: "pointer",
-                  color: C.muted,
                 }}
               >
-                <X size={18} />
+                <X size={15} color={C.muted} />
               </button>
             </div>
+
             {pendingQueue.length === 0 ? (
               <p
                 style={{
@@ -1465,81 +1875,130 @@ export default function KioskView() {
                   padding: "20px 0",
                 }}
               >
-                No passengers currently waiting.
+                No one waiting right now.
               </p>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {pendingQueue.map((r, idx) => (
-                  <div
-                    key={r._id || idx}
-                    style={{
-                      background: C.surface,
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 12,
-                      padding: "12px 14px",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center" }}>
-                        <span
-                          style={{
-                            fontFamily: GR,
-                            fontWeight: 700,
-                            fontSize: 13.5,
-                            color: C.text,
-                          }}
-                        >
-                          {getTerm(r.destination)?.name || r.destination}
-                        </span>
-                        {r.source === "kiosk" && (
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                {pendingQueue.map((r, i) => {
+                  const wait = Math.round(
+                    (Date.now() - new Date(r.ts).getTime()) / 60000,
+                  );
+                  const claimed = r.discountClaim || r.discountType;
+                  return (
+                    <div
+                      key={r._id}
+                      style={{
+                        background: i === 0 ? C.greenLight : C.surface,
+                        borderRadius: 12,
+                        padding: "12px 14px",
+                        border: `1px solid ${i === 0 ? C.green : C.border}`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <span>
                           <span
                             style={{
                               fontFamily: GR,
                               fontWeight: 700,
-                              fontSize: 9.5,
-                              color: C.navy,
-                              background: C.yellow,
-                              borderRadius: 6,
-                              padding: "1px 6px",
-                              marginLeft: 6,
-                              textTransform: "uppercase",
+                              fontSize: 13,
+                              color: C.text,
                             }}
                           >
-                            Kiosk
+                            {getTerm(r.destination)?.name}
                           </span>
-                        )}
+                          {r.source === "kiosk" && (
+                            <span
+                              style={{
+                                fontFamily: GR,
+                                fontWeight: 700,
+                                fontSize: 9.5,
+                                color: C.navy,
+                                background: C.yellow,
+                                borderRadius: 6,
+                                padding: "1px 6px",
+                                marginLeft: 6,
+                                textTransform: "uppercase",
+                              }}
+                            >
+                              Kiosk
+                            </span>
+                          )}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: GR,
+                            fontWeight: 700,
+                            fontSize: 13,
+                            color: C.green,
+                          }}
+                        >
+                          {"\u20B1"}
+                          {r.fare}.00
+                        </span>
                       </div>
                       <div
                         style={{
-                          fontFamily: IN,
-                          fontSize: 11.5,
-                          color: C.muted,
-                          marginTop: 2,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
                         }}
                       >
-                        Origin: {getTerm(r.origin)?.short || r.origin} ·{" "}
-                        {fmtTime
-                          ? fmtTime(r.ts)
-                          : new Date(r.ts).toLocaleTimeString()}
+                        <span
+                          style={{
+                            fontFamily: IN,
+                            fontSize: 11,
+                            color: C.muted,
+                          }}
+                        >
+                          {wait <= 0 ? "Just now" : `${wait}m waiting`}
+                          {claimed
+                            ? ` · ${discountLabel(claimed)} discount${
+                                r.discountPending ? " (check ID, then tap)" : ""
+                              }`
+                            : ""}
+                        </span>
+                        {i === 0 && (
+                          <span
+                            style={{
+                              fontFamily: GR,
+                              fontWeight: 700,
+                              fontSize: 10.5,
+                              color: C.greenDark,
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            Next up
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div
-                      style={{
-                        fontFamily: GR,
-                        fontWeight: 700,
-                        fontSize: 14,
-                        color: C.green,
-                      }}
-                    >
-                      ₱{r.fare}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
+
+            <p
+              style={{
+                fontSize: 11,
+                color: C.muted,
+                fontFamily: IN,
+                margin: "14px 0 0",
+                textAlign: "center",
+              }}
+            >
+              Drivers: tap your card on the reader to accept the next waiting
+              passenger. For a discount ride, check the passenger's ID first -
+              your tap confirms the discount.
+            </p>
           </div>
         </div>
       )}

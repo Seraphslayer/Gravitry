@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, ArrowRight, ArrowLeft, CheckCircle } from "lucide-react";
-import { C, GR, IN, Logo } from "./shared.jsx";
+import { C, GR, IN, Logo, DISCOUNTS, DISCOUNT_KEYS } from "./shared.jsx";
 import { useAuth } from "./AuthContext.jsx";
 import { resubmitVerification } from "./api.js";
 import CameraCapture from "./CameraCapture.jsx";
@@ -39,13 +39,27 @@ function Field({ label, ...props }) {
 const CONSENT_TEXT =
   "I agree that Gravitry and the Mary Cris Complex TODA may collect my government ID photo and selfie only to check that I live in Mary Cris Complex, as allowed under the Data Privacy Act of 2012 (RA 10173). Authorized TODA staff will review them, and the photos are deleted once my account is approved or rejected.";
 
+const CONSENT_DISCOUNT_TEXT =
+  " I also agree that TODA staff may review the photo of my discount ID only to check that I qualify for the fare discount, and that it is deleted once they decide.";
+
 // resubmit = true: the passenger already has an account (it was rejected), so
 // only the photo steps are shown.
 export default function SignupFlow({ resubmit = false, onClose }) {
-  const { signup, refresh } = useAuth();
-  const steps = resubmit
-    ? ["id", "selfie", "review"]
-    : ["details", "id", "selfie", "review"];
+  const { signup, refresh, user } = useAuth();
+
+  // Which discount (if any) this account is asking for. For a new signup the
+  // passenger picks it on the first step; for a resubmit it is whatever they
+  // originally asked for.
+  const [claim, setClaim] = useState(""); // "" | "student" | "senior" | "pwd"
+  const activeClaim = resubmit ? user?.discountClaim || "" : claim;
+
+  const steps = [
+    ...(resubmit ? [] : ["details"]),
+    "id",
+    ...(activeClaim ? ["discountId"] : []),
+    "selfie",
+    "review",
+  ];
   const [stepIndex, setStepIndex] = useState(0);
   const step = steps[stepIndex];
 
@@ -56,10 +70,14 @@ export default function SignupFlow({ resubmit = false, onClose }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [idPhoto, setIdPhoto] = useState(null);
+  const [discountIdPhoto, setDiscountIdPhoto] = useState(null);
   const [selfie, setSelfie] = useState(null);
   const [consent, setConsent] = useState(false);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const discountName = DISCOUNTS[activeClaim]?.label || "";
+  const discountIdName = DISCOUNTS[activeClaim]?.idName || "discount ID";
 
   const validate = () => {
     if (step === "details") {
@@ -72,6 +90,8 @@ export default function SignupFlow({ resubmit = false, onClose }) {
     }
     if (step === "id" && !idPhoto)
       return "Please take a photo of your government ID.";
+    if (step === "discountId" && !discountIdPhoto)
+      return `Please take a photo of your ${discountIdName}.`;
     if (step === "selfie" && !selfie) return "Please take a selfie.";
     if (step === "review" && !consent)
       return "Please agree to the terms to continue.";
@@ -103,7 +123,12 @@ export default function SignupFlow({ resubmit = false, onClose }) {
     setError(null);
     try {
       if (resubmit) {
-        await resubmitVerification({ idPhoto, selfie, consent: true });
+        await resubmitVerification({
+          idPhoto,
+          selfie,
+          consent: true,
+          ...(activeClaim ? { discountIdPhoto } : {}),
+        });
         await refresh();
       } else {
         await signup({
@@ -115,6 +140,9 @@ export default function SignupFlow({ resubmit = false, onClose }) {
           idPhoto,
           selfie,
           consent: true,
+          ...(activeClaim
+            ? { discountClaim: activeClaim, discountIdPhoto }
+            : {}),
         });
       }
       onClose();
@@ -137,12 +165,22 @@ export default function SignupFlow({ resubmit = false, onClose }) {
       "Government ID",
       "Take a clear photo of a government-issued ID. The address should be readable.",
     ],
+    discountId: [
+      `${discountName} discount ID`,
+      `Take a clear photo of your ${discountIdName}. It must clearly show that you are a ${discountName.toLowerCase()}.`,
+    ],
     selfie: [
       "Selfie",
       "Take a selfie right now. Face the camera in good light, no mask or sunglasses.",
     ],
     review: ["Review and submit", "Check your photos and agree to the terms."],
   };
+
+  const reviewPhotos = [
+    ["ID", idPhoto],
+    ...(activeClaim ? [[discountIdName, discountIdPhoto]] : []),
+    ["Selfie", selfie],
+  ];
 
   return (
     <div
@@ -272,6 +310,63 @@ export default function SignupFlow({ resubmit = false, onClose }) {
               onChange={(e) => setPhone(e.target.value)}
               autoComplete="tel"
             />
+
+            <div style={{ marginBottom: 14 }}>
+              <span
+                style={{
+                  display: "block",
+                  fontFamily: IN,
+                  fontSize: 11.5,
+                  color: C.muted,
+                  marginBottom: 6,
+                }}
+              >
+                Fare discount (20% off)
+              </span>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {[
+                  ["", "None"],
+                  ...DISCOUNT_KEYS.map((k) => [k, DISCOUNTS[k].label]),
+                ].map(([key, label]) => (
+                  <button
+                    key={key || "none"}
+                    type="button"
+                    onClick={() => {
+                      setClaim(key);
+                      setDiscountIdPhoto(null);
+                    }}
+                    style={{
+                      padding: "9px 14px",
+                      borderRadius: 20,
+                      border: `1.5px solid ${claim === key ? C.green : C.border}`,
+                      background: claim === key ? C.greenLight : "#fff",
+                      color: claim === key ? C.greenDark : C.text,
+                      fontFamily: GR,
+                      fontWeight: 600,
+                      fontSize: 12.5,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {claim && (
+                <p
+                  style={{
+                    fontFamily: IN,
+                    fontSize: 11.5,
+                    color: C.muted,
+                    margin: "8px 0 0",
+                    lineHeight: 1.45,
+                  }}
+                >
+                  You will also upload a photo of your {DISCOUNTS[claim].idName}
+                  . The discount applies automatically once TODA staff check it.
+                </p>
+              )}
+            </div>
+
             <Field
               label="Username"
               value={username}
@@ -305,6 +400,16 @@ export default function SignupFlow({ resubmit = false, onClose }) {
           />
         )}
 
+        {step === "discountId" && (
+          <CameraCapture
+            key="discountId"
+            facing="environment"
+            hint={`Place your ${discountIdName} flat, in good light`}
+            value={discountIdPhoto}
+            onChange={setDiscountIdPhoto}
+          />
+        )}
+
         {step === "selfie" && (
           <CameraCapture
             key="selfie"
@@ -319,11 +424,8 @@ export default function SignupFlow({ resubmit = false, onClose }) {
         {step === "review" && (
           <div>
             <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-              {[
-                ["ID", idPhoto],
-                ["Selfie", selfie],
-              ].map(([label, src]) => (
-                <div key={label} style={{ flex: 1 }}>
+              {reviewPhotos.map(([label, src]) => (
+                <div key={label} style={{ flex: 1, minWidth: 0 }}>
                   <p
                     style={{
                       fontFamily: IN,
@@ -362,6 +464,13 @@ export default function SignupFlow({ resubmit = false, onClose }) {
               Your account will be <strong>temporary</strong> until TODA staff
               check your ID and selfie and make it permanent. You can sign in
               right away while you wait.
+              {activeClaim && (
+                <>
+                  {" "}
+                  Your <strong>{discountName} discount</strong> starts once they
+                  confirm your {discountIdName}.
+                </>
+              )}
             </div>
             <label
               style={{
@@ -382,7 +491,10 @@ export default function SignupFlow({ resubmit = false, onClose }) {
                 onChange={(e) => setConsent(e.target.checked)}
                 style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }}
               />
-              <span>{CONSENT_TEXT}</span>
+              <span>
+                {CONSENT_TEXT}
+                {activeClaim ? CONSENT_DISCOUNT_TEXT : ""}
+              </span>
             </label>
           </div>
         )}

@@ -9,6 +9,9 @@ import {
   fmtTime,
   getDocStatus,
   Logo,
+  DISCOUNTS,
+  DISCOUNT_KEYS,
+  discountLabel,
 } from "./shared.jsx";
 import {
   getDrivers,
@@ -27,6 +30,7 @@ function Badge({ children, variant = "gray" }) {
     green: { bg: "#D1FAE5", fg: "#065F46" },
     blue: { bg: "#DBEAFE", fg: "#1E40AF" },
     gray: { bg: "#F3F4F6", fg: "#374151" },
+    yellow: { bg: "#FEF3C7", fg: "#92400E" },
   };
   const { bg, fg } = map[variant] || map.gray;
   return (
@@ -572,7 +576,7 @@ function FaresTab({ fares, loading, onUpdated }) {
               color: C.text,
             }}
           >
-            Fare Matrix
+            Fare Matrix (regular fare per person)
           </span>
           <span style={{ fontSize: 11.5, color: C.muted, fontFamily: IN }}>
             Tap a cell to edit
@@ -739,7 +743,8 @@ function FaresTab({ fares, loading, onUpdated }) {
       </div>
       <p style={{ fontSize: 11.5, color: C.muted, fontFamily: IN, margin: 0 }}>
         Fare edits are versioned in the database - previous rates are kept in a
-        history log.
+        history log. Student, senior citizen and PWD passengers automatically
+        pay 20% less than these fares.
       </p>
     </div>
   );
@@ -844,6 +849,19 @@ function LogTab({ logs, loading }) {
                   }}
                 >
                   {log._id}
+                  {log.source === "kiosk" && (
+                    <div
+                      style={{
+                        fontFamily: GR,
+                        fontSize: 9.5,
+                        fontWeight: 700,
+                        color: C.navy,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Kiosk
+                    </div>
+                  )}
                 </td>
                 <td
                   data-label="Route"
@@ -884,6 +902,32 @@ function LogTab({ logs, loading }) {
                 >
                   {"\u20B1"}
                   {log.fare}.00
+                  {log.discountApplied && (
+                    <div
+                      style={{
+                        fontFamily: IN,
+                        fontWeight: 500,
+                        fontSize: 10.5,
+                        color: C.muted,
+                      }}
+                    >
+                      {discountLabel(log.discountType)} discount
+                      {log.regularFare ? ` (regular ₱${log.regularFare})` : ""}
+                    </div>
+                  )}
+                  {!log.discountApplied && log.discountPending && (
+                    <div
+                      style={{
+                        fontFamily: IN,
+                        fontWeight: 500,
+                        fontSize: 10.5,
+                        color: "#92400E",
+                      }}
+                    >
+                      {discountLabel(log.discountClaim)} discount (waiting for
+                      driver)
+                    </div>
+                  )}
                 </td>
                 <td
                   data-label="Time"
@@ -918,11 +962,15 @@ function LogTab({ logs, loading }) {
 }
 
 function ReviewModal({ passenger, onClose, onDone }) {
+  const claim = passenger.discountClaim || null;
   const [photos, setPhotos] = useState(null);
   const [error, setError] = useState(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  // Which discount to grant when approving (only asked if they requested one).
+  // Defaults to what they asked for; staff can change it or choose "none".
+  const [discountChoice, setDiscountChoice] = useState(claim || "none");
 
   useEffect(() => {
     getVerificationPhotos(passenger._id)
@@ -942,7 +990,12 @@ function ReviewModal({ passenger, onClose, onDone }) {
     setBusy(true);
     setError(null);
     try {
-      await reviewVerification(passenger._id, decision, reason.trim());
+      await reviewVerification(
+        passenger._id,
+        decision,
+        reason.trim(),
+        decision === "approve" ? (claim ? discountChoice : "none") : undefined,
+      );
       onDone();
     } catch (err) {
       setError(
@@ -968,6 +1021,21 @@ function ReviewModal({ passenger, onClose, onDone }) {
       <span style={{ color: C.text, fontWeight: 600 }}>{value || "-"}</span>
     </div>
   );
+
+  const photoList = photos
+    ? [
+        ["Government ID", photos.idPhoto],
+        ...(photos.discountIdPhoto
+          ? [
+              [
+                `${DISCOUNTS[claim]?.idName || "Discount ID"} (discount request)`,
+                photos.discountIdPhoto,
+              ],
+            ]
+          : []),
+        ["Selfie", photos.selfie],
+      ]
+    : [];
 
   return (
     <div
@@ -1030,6 +1098,10 @@ function ReviewModal({ passenger, onClose, onDone }) {
         {row("Phone", passenger.phone)}
         {row("Address", passenger.address)}
         {row(
+          "Discount",
+          claim ? `Requested: ${discountLabel(claim)}` : "None requested",
+        )}
+        {row(
           "Submitted",
           passenger.verificationSubmittedAt
             ? fmtTime(passenger.verificationSubmittedAt)
@@ -1047,6 +1119,14 @@ function ReviewModal({ passenger, onClose, onDone }) {
           Check that the ID is real and readable, that its address is in Mary
           Cris Complex and matches the address above, and that the selfie shows
           the same person as the ID.
+          {claim && (
+            <>
+              {" "}
+              Also check that the discount ID is real, not expired, shows the
+              same person, and really proves they are a{" "}
+              {discountLabel(claim).toLowerCase()}.
+            </>
+          )}
         </p>
 
         {error && (
@@ -1080,10 +1160,7 @@ function ReviewModal({ passenger, onClose, onDone }) {
               marginBottom: 16,
             }}
           >
-            {[
-              ["Government ID", photos.idPhoto],
-              ["Selfie", photos.selfie],
-            ].map(([label, src]) => (
+            {photoList.map(([label, src]) => (
               <div key={label}>
                 <p
                   style={{
@@ -1104,6 +1181,46 @@ function ReviewModal({ passenger, onClose, onDone }) {
               </div>
             ))}
           </div>
+        )}
+
+        {photos && claim && !rejecting && (
+          <label style={{ display: "block", marginBottom: 14 }}>
+            <span
+              style={{
+                display: "block",
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 12,
+                color: C.navy,
+                marginBottom: 4,
+              }}
+            >
+              Discount to grant when approving
+            </span>
+            <select
+              value={discountChoice}
+              onChange={(e) => setDiscountChoice(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "11px 12px",
+                borderRadius: 10,
+                border: `1.5px solid ${C.border}`,
+                fontFamily: IN,
+                fontSize: 13,
+                background: "#fff",
+              }}
+            >
+              {DISCOUNT_KEYS.map((k) => (
+                <option key={k} value={k}>
+                  {DISCOUNTS[k].label} discount (20% off)
+                  {k === claim ? " - what they asked for" : ""}
+                </option>
+              ))}
+              <option value="none">
+                No discount - approve the account only
+              </option>
+            </select>
+          </label>
         )}
 
         {photos && rejecting && (
@@ -1306,6 +1423,13 @@ function VerifyTab({ items, loading, onChanged }) {
               <span style={{ color: C.muted, fontWeight: 500, fontSize: 12 }}>
                 @{p.username}
               </span>
+              {p.discountClaim && (
+                <span style={{ marginLeft: 6 }}>
+                  <Badge variant="yellow">
+                    {discountLabel(p.discountClaim)} discount
+                  </Badge>
+                </span>
+              )}
             </div>
             <div style={{ fontFamily: IN, fontSize: 12, color: C.muted }}>
               {p.address || "No address"}

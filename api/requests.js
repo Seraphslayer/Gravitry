@@ -12,6 +12,12 @@ const PENDING_CAN_BOOK = true;
 // kiosk at a time; stale ones expire so the kiosk can never get stuck.
 const KIOSK_PENDING_TTL_MIN = 10;
 
+// Fare discount for students, senior citizens and PWDs: 80% of the regular
+// fare (15 -> 12, 20 -> 16), per the official TODA fare matrix. Keep in sync
+// with discountedFare() in src/shared.jsx.
+const DISCOUNT_TYPES = ["student", "senior", "pwd"];
+const discountedFare = (regular) => Math.round(regular * 0.8);
+
 async function nextId(db, name, prefix) {
   const result = await db
     .collection("counters")
@@ -83,21 +89,36 @@ export default async function handler(req, res) {
 
     // POST /api/requests  - kiosk or passenger app creates a pending ride request
     if (req.method === "POST" && !id && !action) {
-      const { origin: o, destination, fare } = req.body || {};
+      const { origin: o, destination } = req.body || {};
       if (!isNonEmptyString(o) || !isNonEmptyString(destination)) {
         return res
           .status(400)
           .json({ error: "origin and destination are required" });
       }
-      if (typeof fare !== "number" || !Number.isFinite(fare) || fare < 0) {
-        return res
-          .status(400)
-          .json({ error: "fare must be a non-negative number" });
-      }
 
-      // Where the ride was created. Kiosk rides can only be accepted by an NFC
-      // card tap, and only one may be pending per kiosk at a time.
-      const source = req.body?.source === "kiosk" ? "kiosk" : "app";
+      // The fare always comes from the database, never from the browser, so a
+      // tampered request can't set its own price or discount.
+      const fareDoc = await db
+        .collection("fares")
+        .findOne({ _id: `${o}-${destination}` });
+      if (!fareDoc || typeof fareDoc.fare !== "number") {
+        return res.status(400).json({ error: "No fare is set for this route" });
+      }
+      const regularFare = fareDoc.fare;
+
+      // Passenger identity is derived from the session, never trusted from the
+      // request body - otherwise anyone could tag a ride with someone else's
+      // passengerId and pollute their ride history. Guests (no session) simply
+      // get no passenger fields, same as before.
+      const session = getSessionFromReq(req);
+
+      // Where the ride was created. A logged-in passenger is always the app;
+      // otherwise the caller says "kiosk" (the kiosk has no login).
+      const source =
+        session?.role !== "passenger" && req.body?.source === "kiosk"
+          ? "kiosk"
+          : "app";
+
       if (source === "kiosk") {
         const cutoff = new Date(
           Date.now() - KIOSK_PENDING_TTL_MIN * 60000,
@@ -130,16 +151,16 @@ export default async function handler(req, res) {
         }
       }
 
-      // Passenger identity is derived from the session, never trusted from the
-      // request body - otherwise anyone could tag a ride with someone else's
-      // passengerId and pollute their ride history. Guests (no session) simply
-      // get no passenger fields, same as before.
-      const session = getSessionFromReq(req);
       let identity = {};
+      let pricing = { fare: regularFare };
+
       if (session?.role === "passenger") {
         const p = await db
           .collection("passengers")
-          .findOne({ _id: session.passengerId }, { projection: { status: 1 } });
+          .findOne(
+            { _id: session.passengerId },
+            { projection: { status: 1, discountType: 1 } },
+          );
         if (!p) {
           return res.status(401).json({ error: "Account not found" });
         }
@@ -160,6 +181,32 @@ export default async function handler(req, res) {
           passengerName: session.name,
           passengerStatus: status,
         };
+        // A discount staff approved on the passenger's ID applies
+        // automatically. Pending accounts pay the regular fare until then.
+        if (status === "verified" && DISCOUNT_TYPES.includes(p.discountType)) {
+          pricing = {
+            fare: discountedFare(regularFare),
+            regularFare,
+            discountType: p.discountType,
+            discountApplied: true,
+          };
+        }
+      } else if (source === "kiosk") {
+        // At the kiosk the passenger only says which discount they are
+        // claiming. It is not applied for real until the driver checks the ID
+        // in person and taps their NFC card (see nfc-accept below).
+        const claim = req.body?.discountClaim;
+        if (claim != null && claim !== "") {
+          if (typeof claim !== "string" || !DISCOUNT_TYPES.includes(claim)) {
+            return res.status(400).json({ error: "Invalid discount type" });
+          }
+          pricing = {
+            fare: discountedFare(regularFare),
+            regularFare,
+            discountClaim: claim,
+            discountPending: true,
+          };
+        }
       }
 
       const reqId = await nextId(db, "requests", "DR");
@@ -167,7 +214,7 @@ export default async function handler(req, res) {
         _id: reqId,
         origin: o,
         destination,
-        fare,
+        ...pricing,
         status: "pending",
         source,
         ts: new Date().toISOString(),
@@ -183,6 +230,13 @@ export default async function handler(req, res) {
     // (see the rate-limiting helpers above for how this stays protected
     // without one). Dispatches the highest-priority pending request at that
     // terminal (kiosk-created first, then oldest) to the card's linked driver.
+    //
+    // Kiosk rides are simply RECORDED as completed at the moment of the tap:
+    // the kiosk exists for drivers who have no phone, so they never open the
+    // Driver app. For a kiosk ride with a discount claim, the tap is also the
+    // driver confirming they checked the passenger's ID, so the discount is
+    // applied. Rides booked in the passenger app still become "dispatched" and
+    // are finished in the Driver app.
     if (req.method === "POST" && !id && action === "nfc-accept") {
       const { nfcId, origin: term } = req.body || {};
       if (
@@ -225,14 +279,28 @@ export default async function handler(req, res) {
       if (!pendingReq)
         return res.status(404).json({ error: "No pending requests right now" });
 
+      const nowIso = new Date().toISOString();
+      const isKioskRide = pendingReq.source === "kiosk";
+
       const update = {
-        status: "dispatched",
+        status: isKioskRide ? "completed" : "dispatched",
         driver: driver.name,
         driverId: driver._id,
         unit: driver.unit,
         plate: driver.plate || "N/A",
-        acceptedAt: new Date().toISOString(),
+        acceptedAt: nowIso,
       };
+      if (isKioskRide) {
+        update.completedAt = nowIso;
+        update.recordedViaNfc = true;
+        if (pendingReq.discountClaim) {
+          update.discountType = pendingReq.discountClaim;
+          update.discountApplied = true;
+          update.discountPending = false;
+          update.discountConfirmedBy = driver._id;
+        }
+      }
+
       const result = await col.findOneAndUpdate(
         { _id: pendingReq._id, status: "pending" },
         { $set: update },
@@ -244,15 +312,26 @@ export default async function handler(req, res) {
           .status(409)
           .json({ error: "That request was just taken. Try again." });
 
-      await db
-        .collection("drivers")
-        .updateOne({ _id: driver._id }, { $set: { status: "on_trip" } });
-      await db
-        .collection("tricycles")
-        .updateOne(
-          { driverId: driver._id },
-          { $set: { status: "on_trip", terminal: null } },
-        );
+      if (isKioskRide) {
+        // Trip is already on record: the driver stays available and their
+        // tricycle is now listed at the drop-off terminal.
+        await db
+          .collection("tricycles")
+          .updateOne(
+            { driverId: driver._id },
+            { $set: { status: "available", terminal: doc.destination } },
+          );
+      } else {
+        await db
+          .collection("drivers")
+          .updateOne({ _id: driver._id }, { $set: { status: "on_trip" } });
+        await db
+          .collection("tricycles")
+          .updateOne(
+            { driverId: driver._id },
+            { $set: { status: "on_trip", terminal: null } },
+          );
+      }
 
       return res.status(200).json(doc);
     }

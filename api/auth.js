@@ -22,6 +22,22 @@ async function nextId(db, name, prefix) {
   return `${prefix}-${String(seq).padStart(3, "0")}`;
 }
 
+// Fare discounts a passenger can apply for. The claim is only a request: the
+// discount applies once TODA staff look at the ID photo and approve it.
+const DISCOUNT_TYPES = ["student", "senior", "pwd"];
+
+// Returns { ok, claim } - claim is one of DISCOUNT_TYPES or null. Anything
+// other than a known type (or empty / "none") is rejected.
+function parseDiscountClaim(value) {
+  if (value == null || value === "" || value === "none") {
+    return { ok: true, claim: null };
+  }
+  if (typeof value === "string" && DISCOUNT_TYPES.includes(value)) {
+    return { ok: true, claim: value };
+  }
+  return { ok: false, claim: null };
+}
+
 // --- Basic brute-force protection ---
 // Rate-limited per-username (not per-IP - Vercel doesn't reliably expose the
 // real client IP without extra config, and per-username protection stops a
@@ -64,7 +80,9 @@ export default async function handler(req, res) {
     // POST /api/auth?action=signup - passenger self-service signup.
     // The account starts as "pending": the person must upload a government ID
     // photo and a selfie, and TODA staff verify them in the admin dashboard
-    // before the account becomes permanent ("verified").
+    // before the account becomes permanent ("verified"). A person who wants a
+    // student / senior / PWD fare discount also uploads that ID; the discount
+    // applies automatically once staff approve it.
     if (req.method === "POST" && action === "signup") {
       const {
         username,
@@ -75,6 +93,8 @@ export default async function handler(req, res) {
         idPhoto,
         selfie,
         consent,
+        discountClaim,
+        discountIdPhoto,
       } = req.body || {};
       if (
         !isNonEmptyString(username) ||
@@ -114,8 +134,17 @@ export default async function handler(req, res) {
           .status(400)
           .json({ error: "A government ID photo and a selfie are required" });
       }
-      // Each signup stores two photos, so cap how fast accounts can be created
-      // (protects the database from being filled by a script).
+      const parsedClaim = parseDiscountClaim(discountClaim);
+      if (!parsedClaim.ok) {
+        return res.status(400).json({ error: "Invalid discount type" });
+      }
+      if (parsedClaim.claim && !isValidPhoto(discountIdPhoto)) {
+        return res.status(400).json({
+          error: "A photo of your discount ID is required for a discount",
+        });
+      }
+      // Each signup stores two or three photos, so cap how fast accounts can
+      // be created (protects the database from being filled by a script).
       if (!(await withinRate(db, "signup", 15, 10 * 60 * 1000))) {
         return res
           .status(429)
@@ -141,6 +170,10 @@ export default async function handler(req, res) {
         address: address.trim(),
         passwordHash: hashPassword(password),
         status: "pending",
+        // discountClaim = what the passenger asked for; discountType = what
+        // staff approved (null until then). Only discountType gives a discount.
+        discountClaim: parsedClaim.claim,
+        discountType: null,
         verificationSubmittedAt: nowIso,
         consentAt: nowIso,
         createdAt: nowIso,
@@ -148,13 +181,18 @@ export default async function handler(req, res) {
       await db.collection("passengers").insertOne(doc);
       // Photos live in their own collection so no normal query on passengers
       // can ever return them.
-      await db
-        .collection("verifications")
-        .updateOne(
-          { _id: passengerId },
-          { $set: { idPhoto, selfie, submittedAt: nowIso } },
-          { upsert: true },
-        );
+      await db.collection("verifications").updateOne(
+        { _id: passengerId },
+        {
+          $set: {
+            idPhoto,
+            selfie,
+            ...(parsedClaim.claim ? { discountIdPhoto } : {}),
+            submittedAt: nowIso,
+          },
+        },
+        { upsert: true },
+      );
       const token = signSession({
         sub: passengerId,
         role: "passenger",
@@ -168,15 +206,18 @@ export default async function handler(req, res) {
         name: doc.name,
         passengerId,
         status: "pending",
+        discountClaim: doc.discountClaim,
+        discountType: null,
       });
     }
 
     // POST /api/auth?action=resubmit - a passenger whose verification was
-    // rejected (or who wants to replace their photos) sends new ones.
+    // rejected (or who wants to replace their photos) sends new ones. If the
+    // account is asking for a discount, the discount ID photo is sent again too.
     if (req.method === "POST" && action === "resubmit") {
       const session = requireSession(req, res, ["passenger"]);
       if (!session) return;
-      const { idPhoto, selfie, consent } = req.body || {};
+      const { idPhoto, selfie, consent, discountIdPhoto } = req.body || {};
       if (consent !== true) {
         return res
           .status(400)
@@ -203,19 +244,30 @@ export default async function handler(req, res) {
           .status(409)
           .json({ error: "This account is already verified" });
       }
+      if (p.discountClaim && !isValidPhoto(discountIdPhoto)) {
+        return res.status(400).json({
+          error: "A photo of your discount ID is required for a discount",
+        });
+      }
       const nowIso = new Date().toISOString();
-      await db
-        .collection("verifications")
-        .updateOne(
-          { _id: p._id },
-          { $set: { idPhoto, selfie, submittedAt: nowIso } },
-          { upsert: true },
-        );
+      await db.collection("verifications").updateOne(
+        { _id: p._id },
+        {
+          $set: {
+            idPhoto,
+            selfie,
+            ...(p.discountClaim ? { discountIdPhoto } : {}),
+            submittedAt: nowIso,
+          },
+        },
+        { upsert: true },
+      );
       await db.collection("passengers").updateOne(
         { _id: p._id },
         {
           $set: {
             status: "pending",
+            discountType: null,
             verificationSubmittedAt: nowIso,
             consentAt: nowIso,
           },
@@ -307,6 +359,8 @@ export default async function handler(req, res) {
           passengerId: passenger._id,
           status: passenger.status || "verified",
           rejectionReason: passenger.rejectionReason || null,
+          discountClaim: passenger.discountClaim || null,
+          discountType: passenger.discountType || null,
         });
       }
 
@@ -328,7 +382,14 @@ export default async function handler(req, res) {
           .collection("passengers")
           .findOne(
             { _id: session.passengerId },
-            { projection: { status: 1, rejectionReason: 1 } },
+            {
+              projection: {
+                status: 1,
+                rejectionReason: 1,
+                discountClaim: 1,
+                discountType: 1,
+              },
+            },
           );
         if (!p) {
           clearSessionCookie(res);
@@ -337,6 +398,8 @@ export default async function handler(req, res) {
         passengerInfo = {
           status: p.status || "verified",
           rejectionReason: p.rejectionReason || null,
+          discountClaim: p.discountClaim || null,
+          discountType: p.discountType || null,
         };
       }
       return res.status(200).json({

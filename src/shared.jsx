@@ -55,6 +55,18 @@ export const fmtTime = (iso) =>
     minute: "2-digit",
   });
 
+// ── Fare discounts (from the official TODA fare matrix) ────────────────────
+// Students, senior citizens and PWDs pay 80% of the regular fare
+// (15 -> 12, 20 -> 16). Must match the rounding in api/requests.js.
+export const DISCOUNTS = {
+  student: { label: "Student", idName: "Student ID" },
+  senior: { label: "Senior Citizen", idName: "Senior Citizen ID" },
+  pwd: { label: "PWD", idName: "PWD ID" },
+};
+export const DISCOUNT_KEYS = Object.keys(DISCOUNTS);
+export const discountLabel = (type) => DISCOUNTS[type]?.label || null;
+export const discountedFare = (regular) => Math.round(regular * 0.8);
+
 // ── Distance / nearest-terminal snapping (used by kiosk/passenger search + pin drop) ──
 function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371000;

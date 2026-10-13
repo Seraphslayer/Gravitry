@@ -24,14 +24,17 @@ export const login = (username, password) =>
     body: JSON.stringify({ username, password }),
   });
 
-// data: { username, password, name, phone, address, idPhoto, selfie, consent }
+// data: { username, password, name, phone, address, idPhoto, selfie, consent,
+//         discountClaim?, discountIdPhoto? }
+// discountClaim is "student" | "senior" | "pwd" (or omitted); when set,
+// discountIdPhoto must be a photo of that ID.
 export const signup = (data) =>
   req("auth?action=signup", {
     method: "POST",
     body: JSON.stringify(data),
   });
 
-// data: { idPhoto, selfie, consent } - for a rejected/pending passenger
+// data: { idPhoto, selfie, consent, discountIdPhoto? } - for a rejected/pending passenger
 export const resubmitVerification = (data) =>
   req("auth?action=resubmit", {
     method: "POST",
@@ -63,7 +66,19 @@ export const getTricycles = () => req("tricycles");
 
 // -- Dispatch requests ----------------------------------------------------------------
 // passenger is optional: { id, name } - attaches identity for logged-in passengers
-export const createRequest = (origin, destination, fare, passenger, source) =>
+// source is "kiosk" for rides made at the kiosk.
+// discountClaim ("student" | "senior" | "pwd") is only used by the kiosk: the
+// driver confirms it by tapping their NFC card. Logged-in passengers get their
+// verified discount automatically on the server.
+// The server works out the fare itself, so the fare argument is only a hint.
+export const createRequest = (
+  origin,
+  destination,
+  fare,
+  passenger,
+  source,
+  discountClaim,
+) =>
   req("requests", {
     method: "POST",
     body: JSON.stringify({
@@ -71,15 +86,11 @@ export const createRequest = (origin, destination, fare, passenger, source) =>
       destination,
       fare,
       ...(source ? { source } : {}),
+      ...(discountClaim ? { discountClaim } : {}),
       ...(passenger
         ? { passengerId: passenger.id, passengerName: passenger.name }
         : {}),
     }),
-  });
-
-export const cancelRequest = (id) =>
-  req(`requests?id=${encodeURIComponent(id)}&action=cancel`, {
-    method: "POST",
   });
 
 export const getRequests = (params = {}) => {
@@ -101,6 +112,11 @@ export const completeRequest = (id) =>
     method: "POST",
   });
 
+export const cancelRequest = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=cancel`, {
+    method: "POST",
+  });
+
 // NFC card tap (keyboard-emulation reader at a physical terminal). No key
 // header - see api/requests.js for how this endpoint protects itself
 // without a secret the browser could leak.
@@ -114,8 +130,13 @@ export const acceptViaNfc = (nfcId, origin) =>
 export const getVerifications = () => req("verifications");
 export const getVerificationPhotos = (id) =>
   req(`verifications?id=${encodeURIComponent(id)}`);
-export const reviewVerification = (id, decision, reason) =>
+// decision: "approve" | "reject"
+// reason: required when rejecting
+// discountType: when approving - "student" | "senior" | "pwd" | "none"
+export const reviewVerification = (id, decision, reason, discountType) =>
   req(`verifications?id=${encodeURIComponent(id)}&action=${decision}`, {
     method: "POST",
-    body: JSON.stringify(decision === "reject" ? { reason } : {}),
+    body: JSON.stringify(
+      decision === "reject" ? { reason } : discountType ? { discountType } : {},
+    ),
   });

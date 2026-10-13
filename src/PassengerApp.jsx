@@ -29,6 +29,7 @@ import {
   Crosshair,
   Minimize2,
   Maximize2,
+  BadgePercent,
 } from "lucide-react";
 import {
   C,
@@ -43,8 +44,16 @@ import {
   nearestTerminal,
   useLiveLocation,
   myLocationIcon,
+  discountedFare,
+  discountLabel,
 } from "./shared.jsx";
-import { getFares, createRequest, getRequestById, getRequests } from "./api.js";
+import {
+  getFares,
+  createRequest,
+  cancelRequest,
+  getRequestById,
+  getRequests,
+} from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import SignupFlow from "./SignupFlow.jsx";
 
@@ -344,6 +353,8 @@ function statusColor(s) {
     return { bg: "#D1FAE5", fg: "#065F46", label: "Completed" };
   if (s === "dispatched")
     return { bg: "#DBEAFE", fg: "#1E40AF", label: "Dispatched" };
+  if (s === "cancelled")
+    return { bg: "#F3F4F6", fg: "#374151", label: "Cancelled" };
   return { bg: "#FEF3C7", fg: "#92400E", label: "Pending" };
 }
 
@@ -473,6 +484,9 @@ function HistoryTab({ passengerId }) {
             >
               <span style={{ fontFamily: IN, fontSize: 11, color: C.muted }}>
                 {fmtTime(r.ts)}
+                {r.discountApplied
+                  ? ` · ${discountLabel(r.discountType)} discount`
+                  : ""}
               </span>
               <span
                 style={{
@@ -1080,6 +1094,11 @@ export default function PassengerApp() {
 
   const isPassenger = user?.role === "passenger";
 
+  // The discount TODA staff approved on this account's ID (student / senior /
+  // pwd), or null. It applies to every ride automatically; the server works
+  // out the real fare, this is just so the screens show the right price.
+  const activeDiscount = isPassenger ? user.discountType || null : null;
+
   // While the account is pending, re-check its status now and then so the
   // banner disappears soon after staff approve it (no reload needed).
   useEffect(() => {
@@ -1102,6 +1121,11 @@ export default function PassengerApp() {
     const tick = async () => {
       try {
         const doc = await getRequestById(myRequestId);
+        if (doc.status === "cancelled") {
+          resetFlow();
+          setError("Your request was cancelled. Please request again.");
+          return;
+        }
         if (doc.status !== "pending") {
           setRecord(doc);
           setFlowStep("success");
@@ -1113,9 +1137,17 @@ export default function PassengerApp() {
     tick();
     const id = setInterval(tick, 3000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flowStep, myRequestId]);
 
-  const fare = origin && dest ? (fares[`${origin.id}-${dest.id}`] ?? 0) : 0;
+  const baseFare = origin && dest ? (fares[`${origin.id}-${dest.id}`] ?? 0) : 0;
+  const fare = activeDiscount ? discountedFare(baseFare) : baseFare;
+  // Fares as shown in the terminal pickers: discounted if this passenger has one.
+  const shownFares = activeDiscount
+    ? Object.fromEntries(
+        Object.entries(fares).map(([k, v]) => [k, discountedFare(v)]),
+      )
+    : fares;
   const flyTarget = dest || origin;
 
   const resetFlow = () => {
@@ -1125,6 +1157,16 @@ export default function PassengerApp() {
     setRecord(null);
     setMyRequestId(null);
     setError(null);
+  };
+
+  // Cancel a waiting request for real, so drivers stop seeing it as pending.
+  const cancelWaiting = async () => {
+    try {
+      if (myRequestId) await cancelRequest(myRequestId);
+    } catch {
+      /* already accepted or gone - reset anyway */
+    }
+    resetFlow();
   };
 
   const handlePickOrigin = (t) => {
@@ -1526,6 +1568,8 @@ export default function PassengerApp() {
                 <span>
                   Temporary account. TODA staff are checking your ID and selfie,
                   and your account becomes permanent once they approve it.
+                  {user.discountClaim &&
+                    ` Your ${discountLabel(user.discountClaim)} discount starts once they approve your ID. Until then you pay the regular fare.`}
                 </span>
               </div>
             )}
@@ -1567,13 +1611,56 @@ export default function PassengerApp() {
                 </button>
               </div>
             )}
+            {activeDiscount && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: C.greenLight,
+                  color: C.greenDark,
+                  borderRadius: 12,
+                  padding: "10px 14px",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  marginBottom: 16,
+                  lineHeight: 1.45,
+                }}
+              >
+                <BadgePercent size={15} style={{ flexShrink: 0 }} />
+                <span>
+                  <strong>{discountLabel(activeDiscount)} discount</strong> is
+                  active on your account. 20% off every ride, applied
+                  automatically.
+                </span>
+              </div>
+            )}
+            {user.status === "verified" &&
+              user.discountClaim &&
+              !user.discountType && (
+                <div
+                  style={{
+                    background: C.surface,
+                    color: C.muted,
+                    borderRadius: 12,
+                    padding: "10px 14px",
+                    fontFamily: IN,
+                    fontSize: 12,
+                    marginBottom: 16,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  TODA staff approved your account but did not approve a
+                  discount, so you pay the regular fare.
+                </div>
+              )}
 
             {tab === "ride" && canBook && (
               <>
                 {flowStep === "origin" && (
                   <LocationStep
                     isOrigin
-                    fares={fares}
+                    fares={shownFares}
                     onPick={handlePickOrigin}
                   />
                 )}
@@ -1582,7 +1669,7 @@ export default function PassengerApp() {
                   <LocationStep
                     isOrigin={false}
                     originTerm={origin}
-                    fares={fares}
+                    fares={shownFares}
                     onPick={handlePickDest}
                     onBack={() => {
                       setFlowStep("origin");
@@ -1631,7 +1718,9 @@ export default function PassengerApp() {
                           marginBottom: 8,
                         }}
                       >
-                        TODA-Approved Official Fare
+                        {activeDiscount
+                          ? `${discountLabel(activeDiscount)} Discount Fare`
+                          : "TODA-Approved Official Fare"}
                       </div>
                       <div
                         style={{
@@ -1653,6 +1742,18 @@ export default function PassengerApp() {
                           .00
                         </span>
                       </div>
+                      {activeDiscount && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            color: "rgba(255,255,255,0.6)",
+                            fontFamily: IN,
+                            fontSize: 12,
+                          }}
+                        >
+                          Regular fare ₱{baseFare}.00 · 20% off
+                        </div>
+                      )}
                       <div
                         style={{
                           marginTop: 10,
@@ -1762,7 +1863,7 @@ export default function PassengerApp() {
                       We'll notify you the moment a TODA driver accepts
                     </p>
                     <button
-                      onClick={resetFlow}
+                      onClick={cancelWaiting}
                       style={{
                         background: "transparent",
                         border: "none",
@@ -1862,6 +1963,13 @@ export default function PassengerApp() {
                         value={record.plate}
                         mono
                       />
+                      {record.discountApplied && (
+                        <SlipRow
+                          icon={<BadgePercent size={13} />}
+                          label="Discount"
+                          value={`${discountLabel(record.discountType)} (20% off)`}
+                        />
+                      )}
                       <SlipRow
                         icon={<span style={{ fontSize: 12 }}>₱</span>}
                         label="Fare"
