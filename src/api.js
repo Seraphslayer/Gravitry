@@ -61,35 +61,55 @@ export const updateDriver = (id, patch) =>
     body: JSON.stringify(patch),
   });
 
+// Driver app heartbeat: tells the server whether this driver is Online. Sent when
+// the driver taps Online / Offline and every ~15s while Online; the admin
+// dashboard shows the driver as Active only while these keep arriving.
+export const sendPresence = (online) =>
+  req("drivers?action=presence", {
+    method: "POST",
+    body: JSON.stringify({ online }),
+  });
+
 // -- Tricycles ----------------------------------------------------------------
 export const getTricycles = () => req("tricycles");
 
 // -- Dispatch requests ----------------------------------------------------------------
-// passenger is optional: { id, name } - attaches identity for logged-in passengers
-// source is "kiosk" for rides made at the kiosk.
+// source is "kiosk" for rides made at the kiosk. Logged-in passengers are
+// identified by their session cookie.
 // discountClaim ("student" | "senior" | "pwd") is only used by the kiosk: the
 // driver confirms it by tapping their NFC card. Logged-in passengers get their
 // verified discount automatically on the server.
-// The server works out the fare itself, so the fare argument is only a hint.
-export const createRequest = (
+// The route, distance and fare come from a signed quote (see getQuote), never
+// from the browser. origin / destination are the TERMINALS nearest to the
+// pickup and drop-off points: they pick the queue the ride goes to.
+// { origin, destination, quoteToken, source?, discountClaim? }
+export const createRequest = ({
   origin,
   destination,
-  fare,
-  passenger,
+  quoteToken,
   source,
   discountClaim,
-) =>
+}) =>
   req("requests", {
     method: "POST",
     body: JSON.stringify({
       origin,
       destination,
-      fare,
+      quoteToken,
       ...(source ? { source } : {}),
       ...(discountClaim ? { discountClaim } : {}),
-      ...(passenger
-        ? { passengerId: passenger.id, passengerName: passenger.name }
-        : {}),
+    }),
+  });
+
+// Road distance and fare between two exact map points. pickup / dropoff are
+// { lat, lng, label }. Returns { quoteToken, distanceMeters, estimated,
+// geometry, regularFare, fare, discountType, discountApplied }.
+export const getQuote = (pickup, dropoff) =>
+  req("quote", {
+    method: "POST",
+    body: JSON.stringify({
+      pickup: { lat: pickup.lat, lng: pickup.lng, label: pickup.label },
+      dropoff: { lat: dropoff.lat, lng: dropoff.lng, label: dropoff.label },
     }),
   });
 

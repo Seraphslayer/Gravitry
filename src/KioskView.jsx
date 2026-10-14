@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -26,6 +26,7 @@ import {
   Users,
   BadgePercent,
   Wifi,
+  Route,
 } from "lucide-react";
 import {
   C,
@@ -41,9 +42,18 @@ import {
   DISCOUNT_KEYS,
   discountLabel,
   discountedFare,
+  pinIcon,
+  RouteLayer,
+  terminalPlace,
+  reverseGeocode,
+  coordLabel,
+  shortAddress,
+  pickupLabel,
+  dropoffLabel,
+  fmtKm,
 } from "./shared.jsx";
 import {
-  getFares,
+  getQuote,
   createRequest,
   cancelRequest,
   getRequestById,
@@ -51,22 +61,7 @@ import {
   acceptViaNfc,
 } from "./api.js";
 
-function makeDivIcon(color, pulse = false) {
-  return L.divIcon({
-    className: "",
-    html: `
-      <div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;">
-        ${pulse ? `<div class="gv-marker-pulse" style="width:34px;height:34px;top:0;left:0;"></div>` : ""}
-        <div style="position:relative;width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};
-          transform:rotate(-45deg);box-shadow:0 3px 8px rgba(0,0,0,0.35);border:2px solid #fff;"></div>
-      </div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 30],
-    popupAnchor: [0, -28],
-  });
-}
-const terminalIcon = makeDivIcon(C.green, false);
-const selectedIcon = makeDivIcon(C.yellow, false);
+const terminalIcon = pinIcon(C.navy, false);
 const droppedPinIcon = L.divIcon({
   className: "",
   html: `<div style="width:14px;height:14px;border-radius:50%;background:#DC2626;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);"></div>`,
@@ -74,7 +69,7 @@ const droppedPinIcon = L.divIcon({
   iconAnchor: [15, 15],
 });
 
-function FlyToTerminal({ target }) {
+function FlyToPoint({ target }) {
   const map = useMap();
   useEffect(() => {
     if (target) map.flyTo([target.lat, target.lng], 17, { duration: 0.6 });
@@ -109,6 +104,7 @@ function SlipRow({ label, value, icon, mono, accent }) {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
+        gap: 12,
         padding: "8px 0",
         borderBottom: `1px solid ${C.border}`,
       }}
@@ -121,6 +117,7 @@ function SlipRow({ label, value, icon, mono, accent }) {
           color: C.muted,
           fontSize: 12,
           fontFamily: IN,
+          flexShrink: 0,
         }}
       >
         {icon} {label}
@@ -131,6 +128,7 @@ function SlipRow({ label, value, icon, mono, accent }) {
           fontWeight: accent ? 700 : 500,
           fontSize: accent ? 16 : 13,
           color: accent ? C.green : C.text,
+          textAlign: "right",
         }}
       >
         {value}
@@ -139,13 +137,16 @@ function SlipRow({ label, value, icon, mono, accent }) {
   );
 }
 
+const KIOSK = "T1";
+
 export default function KioskView() {
-  const KIOSK = "T1";
   const [step, setStep] = useState("home"); // home | select | fare | waiting | success
-  const [dest, setDest] = useState(null);
+  const [dest, setDest] = useState(null); // exact drop-off point { lat, lng, label }
   const [record, setRecord] = useState(null);
   const [myRequestId, setMyRequestId] = useState(null);
-  const [fares, setFares] = useState({});
+  const [quote, setQuote] = useState(null);
+  const [quoteError, setQuoteError] = useState(null);
+  const [quoteTry, setQuoteTry] = useState(0);
   // Discount the passenger says they qualify for ("student" | "senior" | "pwd"
   // or null). It is only a claim: the driver checks the ID in person and taps
   // their NFC card to confirm it.
@@ -155,8 +156,8 @@ export default function KioskView() {
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [pinMode, setPinMode] = useState(false);
-  const [droppedPin, setDroppedPin] = useState(null);
-  const [snap, setSnap] = useState(null);
+  const [draft, setDraft] = useState(null); // { lat, lng, label, resolving }
+  const draftKey = useRef("");
   const [showSettings, setShowSettings] = useState(false);
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -172,25 +173,17 @@ export default function KioskView() {
   const lastKeyTimeRef = useRef(0);
   const lastAcceptedRef = useRef({ id: null, time: 0 });
 
-  // No GPS on the kiosk: it is fixed at its own terminal (KIOSK below), so the
-  // origin is always known and passengers only choose a destination.
-
+  // No GPS on the kiosk: it is fixed at its own terminal, so the pickup point
+  // is always known and passengers only choose where they are going.
   const originTerm = getTerm(KIOSK);
-  const dests = TERMINALS.filter((t) => t.id !== KIOSK);
-  const getFare = (o, d) => fares[`${o}-${d}`] ?? 0;
-  const baseFare = dest ? getFare(KIOSK, dest.id) : 0;
-  const fare = discountClaim ? discountedFare(baseFare) : baseFare;
+  const pickupPlace = terminalPlace(originTerm);
+
+  const regularFare = quote?.regularFare ?? 0;
+  const fare = discountClaim ? discountedFare(regularFare) : regularFare;
 
   // A kiosk ride is already waiting for a driver's card tap, so no new one
   // may be created until it is accepted (the server enforces this too).
   const kioskBusy = pendingQueue.some((r) => r.source === "kiosk");
-
-  // Load fares from backend on mount
-  useEffect(() => {
-    getFares()
-      .then(setFares)
-      .catch(() => setError("Could not load fares. Check your connection."));
-  }, []);
 
   // Poll the pending queue for this terminal, so drivers standing at the
   // kiosk (or anyone checking) can see who's waiting - independent of
@@ -227,7 +220,6 @@ export default function KioskView() {
       cancelled = true;
       clearInterval(id);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Collapse the bottom sheet down to just its handle whenever pin-drop mode
@@ -238,6 +230,31 @@ export default function KioskView() {
     setSheetCollapsed(pinMode);
   }, [pinMode]);
 
+  // Work out the road distance and fare once the drop-off point is chosen.
+  useEffect(() => {
+    if (step !== "fare" || !dest) return;
+    let cancelled = false;
+    setQuote(null);
+    setQuoteError(null);
+    getQuote(pickupPlace, dest)
+      .then((q) => {
+        if (!cancelled) setQuote(q);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = err.message
+          ? err.message.replace(/^API .* failed: /, "")
+          : "";
+        setQuoteError(
+          msg || "Couldn't work out the fare. Check your connection.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, dest, quoteTry]);
+
   // NFC card-tap capture. The reader is a keyboard-emulation USB device: it
   // "types" the card's digits and an Enter, extremely fast (much faster than
   // a human). We only treat a burst as a tap when the inter-key timing is
@@ -247,7 +264,6 @@ export default function KioskView() {
     const FAST_THRESHOLD_MS = 50;
     const MIN_DIGITS = 6;
     const MAX_DIGITS = 20;
-    const DEBOUNCE_MS = 5000;
 
     const handleKeyDown = (e) => {
       const now = performance.now();
@@ -307,7 +323,7 @@ export default function KioskView() {
       const doc = await acceptViaNfc(nfcId, KIOSK);
       setNfcNotice({
         type: "success",
-        text: `${doc.driver} · ride to ${getTerm(doc.destination)?.short} recorded${
+        text: `${doc.driver} · ride to ${dropoffLabel(doc)} recorded${
           doc.discountApplied
             ? ` · ${discountLabel(doc.discountType)} discount applied`
             : ""
@@ -372,44 +388,74 @@ export default function KioskView() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const pickLocation = (lat, lng) => {
-    const lt = parseFloat(lat),
-      lg = parseFloat(lng);
-    setDroppedPin({ lat: lt, lng: lg });
-    setSnap(nearestTerminal(lt, lg, KIOSK));
+  // Puts the exact point on the map right away, then looks up its address.
+  const setDraftPoint = async (lat, lng, label = null) => {
+    const lt = parseFloat(lat);
+    const lg = parseFloat(lng);
+    const key = `${lt},${lg}`;
+    draftKey.current = key;
+    setDraft({
+      lat: lt,
+      lng: lg,
+      label: label || coordLabel(lt, lg),
+      resolving: !label,
+    });
     setPinMode(false);
     setResults([]);
     setQuery("");
+    if (!label) {
+      const addr = await reverseGeocode(lt, lg);
+      if (draftKey.current === key) {
+        setDraft((d) =>
+          d && `${d.lat},${d.lng}` === key
+            ? { ...d, label: addr || d.label, resolving: false }
+            : d,
+        );
+      }
+    }
   };
 
-  const confirmSnap = () => {
-    if (snap?.terminal) {
-      setDest(snap.terminal);
+  // Stable function for the map click handler (see MapClickCatcher below).
+  const setDraftPointRef = useRef(setDraftPoint);
+  setDraftPointRef.current = setDraftPoint;
+  const onMapPick = useCallback(
+    (lat, lng) => setDraftPointRef.current(lat, lng),
+    [],
+  );
+
+  const confirmDraft = () => {
+    if (draft) {
+      setDest({ lat: draft.lat, lng: draft.lng, label: draft.label });
       setStep("fare");
     }
   };
 
   const handleConfirm = async () => {
+    if (!quote || !dest) return;
     setSubmitting(true);
     setError(null);
     try {
-      const req = await createRequest(
-        KIOSK,
-        dest.id,
-        fare,
-        null,
-        "kiosk",
+      const req = await createRequest({
+        origin: KIOSK,
+        destination: nearestTerminal(dest.lat, dest.lng).terminal.id,
+        quoteToken: quote.quoteToken,
+        source: "kiosk",
         discountClaim,
-      );
+      });
       setMyRequestId(req._id);
       setStep("waiting");
     } catch (err) {
       const msg = err.message?.replace(/^API .* failed: /, "") || "";
-      setError(
-        /already waiting/i.test(msg)
-          ? msg
-          : "Couldn't send your request. Please try again.",
-      );
+      if (/quote|expired/i.test(msg)) {
+        setError(msg);
+        setQuoteTry((n) => n + 1);
+      } else {
+        setError(
+          /already waiting/i.test(msg)
+            ? msg
+            : "Couldn't send your request. Please try again.",
+        );
+      }
     }
     setSubmitting(false);
   };
@@ -417,14 +463,16 @@ export default function KioskView() {
   const reset = () => {
     setStep("home");
     setDest(null);
+    setQuote(null);
+    setQuoteError(null);
     setRecord(null);
     setMyRequestId(null);
     setDiscountClaim(null);
     setQuery("");
     setResults([]);
     setPinMode(false);
-    setDroppedPin(null);
-    setSnap(null);
+    draftKey.current = "";
+    setDraft(null);
     setError(null);
   };
 
@@ -439,7 +487,8 @@ export default function KioskView() {
     reset();
   };
 
-  const flyTarget = dest || originTerm;
+  const showRoute =
+    (step === "fare" || step === "waiting" || step === "success") && dest;
 
   return (
     <div className="kiosk-shell">
@@ -644,24 +693,26 @@ export default function KioskView() {
             updateWhenIdle={true}
             keepBuffer={1}
           />
-          <FlyToTerminal target={flyTarget} />
-          <MapClickCatcher active={pinMode} onPick={pickLocation} />
+          {step === "select" && <FlyToPoint target={draft} />}
+          <MapClickCatcher active={pinMode} onPick={onMapPick} />
           <MapVisibilitySync trigger={sheetCollapsed} />
-          {droppedPin && (
-            <Marker
-              position={[droppedPin.lat, droppedPin.lng]}
-              icon={droppedPinIcon}
-            />
-          )}
+
           {TERMINALS.map((t) => (
-            <Marker
-              key={t.id}
-              position={[t.lat, t.lng]}
-              icon={t.id === KIOSK ? selectedIcon : terminalIcon}
-            >
+            <Marker key={t.id} position={[t.lat, t.lng]} icon={terminalIcon}>
               <Popup>{t.name}</Popup>
             </Marker>
           ))}
+
+          {step === "select" && draft && (
+            <Marker position={[draft.lat, draft.lng]} icon={droppedPinIcon} />
+          )}
+          {showRoute && (
+            <RouteLayer
+              pickup={pickupPlace}
+              dropoff={dest}
+              route={quote?.geometry}
+            />
+          )}
         </MapContainer>
 
         {pinMode && (
@@ -965,7 +1016,9 @@ export default function KioskView() {
                 {results.map((r, i) => (
                   <button
                     key={i}
-                    onClick={() => pickLocation(r.lat, r.lon)}
+                    onClick={() =>
+                      setDraftPoint(r.lat, r.lon, shortAddress(r.display_name))
+                    }
                     style={{
                       background: C.white,
                       border: `1px solid ${C.border}`,
@@ -998,7 +1051,7 @@ export default function KioskView() {
               </div>
             )}
 
-            {!snap && (
+            {!draft && (
               <button
                 onClick={() => setPinMode(true)}
                 style={{
@@ -1023,7 +1076,7 @@ export default function KioskView() {
               </button>
             )}
 
-            {snap?.terminal && (
+            {draft && (
               <div
                 style={{
                   background: C.navy,
@@ -1040,39 +1093,41 @@ export default function KioskView() {
                     marginBottom: 6,
                   }}
                 >
-                  Nearest terminal to your pin ({snap.distanceMeters}m away):
+                  Drop-off point — shown on the map
                 </div>
                 <div
                   style={{
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
+                    gap: 12,
                   }}
                 >
-                  <div>
+                  <div style={{ minWidth: 0 }}>
                     <div
                       style={{
                         color: "#fff",
                         fontFamily: GR,
                         fontWeight: 700,
-                        fontSize: 15,
+                        fontSize: 14,
+                        lineHeight: 1.3,
                       }}
                     >
-                      {snap.terminal.name}
+                      {draft.resolving ? "Finding the address…" : draft.label}
                     </div>
                     <div
                       style={{
-                        color: C.yellow,
-                        fontFamily: GR,
-                        fontSize: 13,
-                        fontWeight: 600,
+                        color: "rgba(255,255,255,0.45)",
+                        fontFamily: "monospace",
+                        fontSize: 10.5,
+                        marginTop: 2,
                       }}
                     >
-                      ₱{getFare(KIOSK, snap.terminal.id)} official fare
+                      {draft.lat.toFixed(5)}, {draft.lng.toFixed(5)}
                     </div>
                   </div>
                   <button
-                    onClick={confirmSnap}
+                    onClick={confirmDraft}
                     style={{
                       background: C.yellow,
                       color: C.navy,
@@ -1083,6 +1138,7 @@ export default function KioskView() {
                       fontWeight: 700,
                       fontSize: 13,
                       cursor: "pointer",
+                      flexShrink: 0,
                     }}
                   >
                     Use this
@@ -1090,8 +1146,8 @@ export default function KioskView() {
                 </div>
                 <button
                   onClick={() => {
-                    setSnap(null);
-                    setDroppedPin(null);
+                    draftKey.current = "";
+                    setDraft(null);
                   }}
                   style={{
                     marginTop: 8,
@@ -1117,14 +1173,14 @@ export default function KioskView() {
                 margin: "0 0 8px",
               }}
             >
-              Or pick a terminal directly:
+              Or choose a terminal as the drop-off point:
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {dests.map((t) => (
+              {TERMINALS.filter((t) => t.id !== KIOSK).map((t) => (
                 <button
                   key={t.id}
                   onClick={() => {
-                    setDest(t);
+                    setDest(terminalPlace(t));
                     setStep("fare");
                   }}
                   style={{
@@ -1156,22 +1212,15 @@ export default function KioskView() {
                     >
                       <MapPin size={16} color={C.green} />
                     </div>
-                    <div>
-                      <div
-                        style={{
-                          color: C.text,
-                          fontFamily: GR,
-                          fontWeight: 600,
-                          fontSize: 14,
-                        }}
-                      >
-                        {t.name}
-                      </div>
-                      <div
-                        style={{ color: C.muted, fontFamily: IN, fontSize: 12 }}
-                      >
-                        ₱{getFare(KIOSK, t.id)} official fare
-                      </div>
+                    <div
+                      style={{
+                        color: C.text,
+                        fontFamily: GR,
+                        fontWeight: 600,
+                        fontSize: 14,
+                      }}
+                    >
+                      {t.name}
                     </div>
                   </div>
                   <ChevronRight
@@ -1187,8 +1236,9 @@ export default function KioskView() {
                 setStep("home");
                 setQuery("");
                 setResults([]);
-                setSnap(null);
-                setDroppedPin(null);
+                draftKey.current = "";
+                setDraft(null);
+                setPinMode(false);
               }}
               style={{
                 marginTop: 14,
@@ -1211,87 +1261,167 @@ export default function KioskView() {
           <div>
             <div
               style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 10,
-                marginBottom: 16,
-                fontFamily: IN,
-                fontSize: 13,
-              }}
-            >
-              <span style={{ color: C.text, fontWeight: 600 }}>
-                {originTerm.short}
-              </span>
-              <ArrowRight size={14} color={C.muted} />
-              <span style={{ color: C.green, fontWeight: 600 }}>
-                {dest.short}
-              </span>
-            </div>
-            <div
-              style={{
-                background: C.navy,
-                borderRadius: 18,
-                padding: "22px 20px",
-                textAlign: "center",
+                background: C.surface,
+                borderRadius: 14,
+                padding: "12px 14px",
+                border: `1px solid ${C.border}`,
                 marginBottom: 14,
+                fontFamily: IN,
+                fontSize: 12.5,
+                color: C.text,
               }}
             >
-              <div
-                style={{
-                  color: "rgba(247,195,68,0.6)",
-                  fontFamily: GR,
-                  fontSize: 10,
-                  letterSpacing: 2,
-                  textTransform: "uppercase",
-                  marginBottom: 8,
-                }}
-              >
-                {discountClaim
-                  ? `${discountLabel(discountClaim)} Discount Fare`
-                  : "TODA-Approved Official Fare"}
+              <div style={{ marginBottom: 4 }}>
+                <span style={{ color: C.muted }}>Pickup: </span>
+                {originTerm.name}
               </div>
+              <div>
+                <span style={{ color: C.muted }}>Drop-off: </span>
+                {dest.label}
+              </div>
+            </div>
+
+            {!quote && !quoteError && (
               <div
-                className="fare-display-amount"
                 style={{
-                  color: C.yellow,
-                  fontFamily: GR,
-                  fontWeight: 700,
-                  lineHeight: 1,
-                  fontSize: "clamp(48px, 14vw, 64px)",
+                  background: C.navy,
+                  borderRadius: 18,
+                  padding: "30px 20px",
+                  textAlign: "center",
+                  marginBottom: 14,
+                  color: "rgba(255,255,255,0.7)",
+                  fontFamily: IN,
+                  fontSize: 13,
                 }}
               >
-                ₱{fare}
-                <span
-                  style={{ fontSize: "0.35em", opacity: 0.5, fontWeight: 400 }}
+                Working out the route and fare…
+              </div>
+            )}
+
+            {quoteError && (
+              <div
+                style={{
+                  background: "#FEE2E2",
+                  color: "#991B1B",
+                  borderRadius: 12,
+                  padding: "12px 14px",
+                  fontFamily: IN,
+                  fontSize: 12.5,
+                  marginBottom: 14,
+                }}
+              >
+                {quoteError}
+                <div>
+                  <button
+                    onClick={() => setQuoteTry((n) => n + 1)}
+                    style={{
+                      marginTop: 8,
+                      background: "#991B1B",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 8,
+                      padding: "7px 12px",
+                      fontFamily: GR,
+                      fontWeight: 700,
+                      fontSize: 12,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Try again
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {quote && (
+              <div
+                style={{
+                  background: C.navy,
+                  borderRadius: 18,
+                  padding: "22px 20px",
+                  textAlign: "center",
+                  marginBottom: 14,
+                }}
+              >
+                <div
+                  style={{
+                    color: "rgba(247,195,68,0.6)",
+                    fontFamily: GR,
+                    fontSize: 10,
+                    letterSpacing: 2,
+                    textTransform: "uppercase",
+                    marginBottom: 8,
+                  }}
                 >
-                  .00
-                </span>
-              </div>
-              {discountClaim && (
+                  {discountClaim
+                    ? `${discountLabel(discountClaim)} Discount Fare`
+                    : "TODA-Approved Official Fare"}
+                </div>
+                <div
+                  className="fare-display-amount"
+                  style={{
+                    color: C.yellow,
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    lineHeight: 1,
+                    fontSize: "clamp(48px, 14vw, 64px)",
+                  }}
+                >
+                  ₱{fare}
+                  <span
+                    style={{
+                      fontSize: "0.35em",
+                      opacity: 0.5,
+                      fontWeight: 400,
+                    }}
+                  >
+                    .00
+                  </span>
+                </div>
                 <div
                   style={{
                     marginTop: 8,
-                    color: "rgba(255,255,255,0.6)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    color: "rgba(255,255,255,0.7)",
                     fontFamily: IN,
-                    fontSize: 12,
+                    fontSize: 12.5,
                   }}
                 >
-                  Regular fare ₱{baseFare}.00 · 20% off
+                  <Route size={13} />
+                  {quote.estimated ? "About " : ""}
+                  {fmtKm(quote.distanceMeters)} by road
+                  {discountClaim
+                    ? ` · regular ₱${regularFare}.00, 20% off`
+                    : ""}
                 </div>
-              )}
-              <div
-                style={{
-                  marginTop: 10,
-                  color: "rgba(255,255,255,0.4)",
-                  fontFamily: IN,
-                  fontSize: 11.5,
-                  lineHeight: 1.5,
-                }}
-              >
-                Government-mandated rate — drivers cannot charge more
+                {quote.estimated && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      color: "rgba(255,255,255,0.4)",
+                      fontFamily: IN,
+                      fontSize: 11,
+                    }}
+                  >
+                    The route service is busy, so this distance is an estimate.
+                  </div>
+                )}
+                <div
+                  style={{
+                    marginTop: 10,
+                    color: "rgba(255,255,255,0.4)",
+                    fontFamily: IN,
+                    fontSize: 11.5,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Government-mandated rate — drivers cannot charge more
+                </div>
               </div>
-            </div>
+            )}
 
             <div style={{ marginBottom: 14 }}>
               <div
@@ -1360,18 +1490,18 @@ export default function KioskView() {
 
             <button
               onClick={handleConfirm}
-              disabled={submitting}
+              disabled={submitting || !quote}
               style={{
                 width: "100%",
                 padding: "16px 0",
                 borderRadius: 14,
                 border: "none",
-                background: submitting ? C.muted : C.green,
+                background: submitting || !quote ? C.muted : C.green,
                 color: "#fff",
                 fontSize: 15,
                 fontWeight: 700,
                 fontFamily: GR,
-                cursor: submitting ? "default" : "pointer",
+                cursor: submitting || !quote ? "default" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -1468,21 +1598,25 @@ export default function KioskView() {
             >
               <div
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
                   fontFamily: GR,
                   fontSize: 13,
                   marginBottom: 6,
                 }}
               >
-                <span style={{ fontWeight: 600, color: C.text }}>
-                  {originTerm.short}
-                </span>
-                <ArrowRight size={13} color={C.muted} />
-                <span style={{ fontWeight: 600, color: C.navy }}>
-                  {dest?.short}
-                </span>
+                <div style={{ fontWeight: 600, color: C.text }}>
+                  {originTerm.name}
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontWeight: 600,
+                    color: C.navy,
+                  }}
+                >
+                  <ArrowRight size={13} color={C.muted} /> {dest?.label}
+                </div>
               </div>
               <div
                 style={{
@@ -1497,6 +1631,7 @@ export default function KioskView() {
                   {discountClaim
                     ? `${discountLabel(discountClaim)} discount fare`
                     : "Official fare"}
+                  {quote ? ` · ${fmtKm(quote.distanceMeters)}` : ""}
                 </span>
                 <span
                   style={{
@@ -1612,6 +1747,23 @@ export default function KioskView() {
                 value={record.plate}
                 mono
               />
+              <SlipRow
+                icon={<MapPin size={13} />}
+                label="Pickup"
+                value={pickupLabel(record)}
+              />
+              <SlipRow
+                icon={<MapPin size={13} />}
+                label="Drop-off"
+                value={dropoffLabel(record)}
+              />
+              {record.distanceMeters ? (
+                <SlipRow
+                  icon={<Route size={13} />}
+                  label="Distance"
+                  value={`${record.distanceEstimated ? "About " : ""}${fmtKm(record.distanceMeters)}`}
+                />
+              ) : null}
               {record.discountApplied && (
                 <SlipRow
                   icon={<BadgePercent size={13} />}
@@ -1769,10 +1921,10 @@ export default function KioskView() {
                     fontFamily: GR,
                     fontWeight: 600,
                     fontSize: 13,
-                    color: Object.keys(fares).length ? C.green : C.danger,
+                    color: C.green,
                   }}
                 >
-                  {Object.keys(fares).length ? "● Connected" : "● Unreachable"}
+                  ● Fares calculated by distance
                 </span>
               </div>
               <div
@@ -1794,7 +1946,7 @@ export default function KioskView() {
                     color: C.text,
                   }}
                 >
-                  v0.6.0
+                  v0.7.0
                 </span>
               </div>
             </div>
@@ -1900,11 +2052,12 @@ export default function KioskView() {
                         style={{
                           display: "flex",
                           justifyContent: "space-between",
-                          alignItems: "center",
+                          alignItems: "flex-start",
+                          gap: 10,
                           marginBottom: 6,
                         }}
                       >
-                        <span>
+                        <span style={{ minWidth: 0 }}>
                           <span
                             style={{
                               fontFamily: GR,
@@ -1913,7 +2066,10 @@ export default function KioskView() {
                               color: C.text,
                             }}
                           >
-                            {getTerm(r.destination)?.name}
+                            {r.source !== "kiosk" && r.pickup?.label
+                              ? `${pickupLabel(r)} → `
+                              : ""}
+                            {dropoffLabel(r)}
                           </span>
                           {r.source === "kiosk" && (
                             <span
@@ -1939,6 +2095,7 @@ export default function KioskView() {
                             fontWeight: 700,
                             fontSize: 13,
                             color: C.green,
+                            flexShrink: 0,
                           }}
                         >
                           {"\u20B1"}
@@ -1960,6 +2117,9 @@ export default function KioskView() {
                           }}
                         >
                           {wait <= 0 ? "Just now" : `${wait}m waiting`}
+                          {r.distanceMeters
+                            ? ` · ${fmtKm(r.distanceMeters)}`
+                            : ""}
                           {claimed
                             ? ` · ${discountLabel(claimed)} discount${
                                 r.discountPending ? " (check ID, then tap)" : ""

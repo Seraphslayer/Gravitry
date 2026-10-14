@@ -12,13 +12,15 @@ import {
   DISCOUNTS,
   DISCOUNT_KEYS,
   discountLabel,
+  TARIFF,
+  pickupLabel,
+  dropoffLabel,
+  fmtKm,
 } from "./shared.jsx";
 import {
   getDrivers,
   updateDriver,
   getTricycles,
-  getFares,
-  updateFare,
   getRequests,
   getVerifications,
   getVerificationPhotos,
@@ -93,6 +95,35 @@ function DocBadge({ label, status }) {
       >
         {status.label}
       </span>
+    </div>
+  );
+}
+
+// "5s ago", "3m ago", "2h ago", "1d ago"
+function timeAgo(iso) {
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+
+// Active = the driver's Driver app is switched to Online and still reporting in.
+// Otherwise Off duty (switched to Offline, logged out, or the app went quiet).
+function DutyBadge({ driver }) {
+  if (driver.appActive) {
+    return <Badge variant="green">{"\u25CF"} Active</Badge>;
+  }
+  return (
+    <div>
+      <Badge variant="gray">Off duty</Badge>
+      <div
+        style={{ fontFamily: IN, fontSize: 10.5, color: C.muted, marginTop: 3 }}
+      >
+        {driver.appLastSeen
+          ? `Last seen ${timeAgo(driver.appLastSeen)}`
+          : "Has not opened the app"}
+      </div>
     </div>
   );
 }
@@ -214,6 +245,7 @@ function DriversTab({ drivers, loading, onRefresh }) {
               "Rating",
               "Documents",
               "NFC Card",
+              "Duty",
               "Status",
             ].map((h) => (
               <th
@@ -237,7 +269,7 @@ function DriversTab({ drivers, loading, onRefresh }) {
           {loading && (
             <tr>
               <td
-                colSpan={8}
+                colSpan={9}
                 style={{
                   padding: 24,
                   textAlign: "center",
@@ -365,6 +397,9 @@ function DriversTab({ drivers, loading, onRefresh }) {
                 </td>
                 <td data-label="NFC Card" style={{ padding: "12px 16px" }}>
                   <NfcCell driver={d} onSaved={onRefresh} />
+                </td>
+                <td data-label="Duty" style={{ padding: "12px 16px" }}>
+                  <DutyBadge driver={d} />
                 </td>
                 <td data-label="Status" style={{ padding: "12px 16px" }}>
                   {statusBadge(d.status)}
@@ -524,28 +559,16 @@ function TricyclesTab({ tricycles, loading }) {
   );
 }
 
-function FaresTab({ fares, loading, onUpdated }) {
-  const [editing, setEditing] = useState(null);
-  const [editVal, setEditVal] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const save = async (origin, destination, key) => {
-    const v = parseInt(editVal);
-    if (isNaN(v) || v <= 0) {
-      setEditing(null);
-      return;
-    }
-    setSaving(true);
-    try {
-      await updateFare(origin, destination, v);
-      onUpdated(key, v);
-    } catch {
-      /* keep old value shown on failure */
-    }
-    setSaving(false);
-    setEditing(null);
-  };
-
+// The fare is worked out automatically from the road distance between the
+// exact pickup and drop-off points (see api/_fare.js), so there is no
+// per-terminal fare matrix to edit any more. This tab just shows the tariff.
+function TariffTab() {
+  const cols = [
+    ["regular", "Regular (per person)"],
+    ["special", "Special trip"],
+    ["discounted", "Discounted (per person)"],
+    ["discountedSpecial", "Discounted special trip"],
+  ];
   return (
     <div>
       <div
@@ -561,11 +584,6 @@ function FaresTab({ fares, loading, onUpdated }) {
           style={{
             padding: "14px 16px",
             borderBottom: `1px solid ${C.border}`,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: 8,
           }}
         >
           <span
@@ -576,175 +594,102 @@ function FaresTab({ fares, loading, onUpdated }) {
               color: C.text,
             }}
           >
-            Fare Matrix (regular fare per person)
-          </span>
-          <span style={{ fontSize: 11.5, color: C.muted, fontFamily: IN }}>
-            Tap a cell to edit
+            Official TODA Tariff
           </span>
         </div>
-        <div
-          className="fare-matrix-wrap"
-          style={{ overflowX: "auto", padding: "16px clamp(8px,3vw,20px)" }}
-        >
-          {loading ? (
-            <p
-              style={{
-                fontFamily: IN,
-                fontSize: 13,
-                color: C.muted,
-                textAlign: "center",
-                padding: 20,
-              }}
-            >
-              Loading...
-            </p>
-          ) : (
-            <table style={{ borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
+        <div style={{ overflowX: "auto", padding: "8px 0" }}>
+          <table style={{ borderCollapse: "collapse", minWidth: 560 }}>
+            <thead>
+              <tr>
+                <th
+                  style={{
+                    padding: "8px 16px",
+                    textAlign: "left",
+                    fontSize: 11,
+                    fontFamily: GR,
+                    fontWeight: 600,
+                    color: C.muted,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Distance
+                </th>
+                {cols.map(([k, label]) => (
                   <th
+                    key={k}
                     style={{
                       padding: "8px 12px",
-                      textAlign: "left",
-                      fontSize: 12,
+                      textAlign: "center",
+                      fontSize: 11,
                       fontFamily: GR,
-                      fontWeight: 700,
+                      fontWeight: 600,
                       color: C.muted,
-                      whiteSpace: "nowrap",
+                      textTransform: "uppercase",
                     }}
                   >
-                    Origin / Dest
+                    {label}
                   </th>
-                  {TERMINALS.map((t) => (
-                    <th
-                      key={t.id}
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {TARIFF.rows.map((row, i) => (
+                <tr
+                  key={row.label}
+                  style={{
+                    borderTop: `1px solid ${C.border}`,
+                    background: i % 2 === 0 ? C.white : "#FAFAF8",
+                  }}
+                >
+                  <td
+                    style={{
+                      padding: "12px 16px",
+                      fontFamily: GR,
+                      fontWeight: 600,
+                      fontSize: 12.5,
+                      color: C.navy,
+                    }}
+                  >
+                    {row.label}
+                  </td>
+                  {cols.map(([k]) => (
+                    <td
+                      key={k}
                       style={{
-                        padding: "8px 14px",
-                        fontSize: 12,
+                        padding: "12px",
+                        textAlign: "center",
                         fontFamily: GR,
                         fontWeight: 700,
-                        color: C.navy,
-                        textAlign: "center",
-                        minWidth: 74,
+                        fontSize: 13,
+                        color: C.greenDark,
                       }}
                     >
-                      {t.short}
-                    </th>
+                      {"\u20B1"}
+                      {row[k]}.00
+                    </td>
                   ))}
                 </tr>
-              </thead>
-              <tbody>
-                {TERMINALS.map((origin, oi) => (
-                  <tr
-                    key={origin.id}
-                    style={{ background: oi % 2 === 0 ? C.white : "#FAFAF8" }}
-                  >
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        fontFamily: GR,
-                        fontWeight: 700,
-                        fontSize: 12.5,
-                        color: C.navy,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {origin.short}
-                    </td>
-                    {TERMINALS.map((dest) => {
-                      const key = `${origin.id}-${dest.id}`;
-                      const same = origin.id === dest.id;
-                      const isEdit = editing === key;
-                      return (
-                        <td
-                          key={dest.id}
-                          style={{ padding: "6px 8px", textAlign: "center" }}
-                        >
-                          {same ? (
-                            <span style={{ color: C.border, fontSize: 14 }}>
-                              -
-                            </span>
-                          ) : isEdit ? (
-                            <div
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 4,
-                              }}
-                            >
-                              <input
-                                value={editVal}
-                                onChange={(e) => setEditVal(e.target.value)}
-                                style={{
-                                  width: 44,
-                                  padding: "3px 5px",
-                                  border: `2px solid ${C.green}`,
-                                  borderRadius: 6,
-                                  fontFamily: "monospace",
-                                  fontSize: 12,
-                                  textAlign: "center",
-                                  outline: "none",
-                                }}
-                                autoFocus
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter")
-                                    save(origin.id, dest.id, key);
-                                  if (e.key === "Escape") setEditing(null);
-                                }}
-                              />
-                              <button
-                                onClick={() => save(origin.id, dest.id, key)}
-                                disabled={saving}
-                                style={{
-                                  background: C.green,
-                                  color: "#fff",
-                                  border: "none",
-                                  borderRadius: 5,
-                                  padding: "3px 7px",
-                                  cursor: "pointer",
-                                  fontSize: 11,
-                                }}
-                              >
-                                {"\u2713"}
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => {
-                                setEditing(key);
-                                setEditVal(String(fares[key] ?? ""));
-                              }}
-                              style={{
-                                background: "#ECFDF5",
-                                border: "none",
-                                borderRadius: 8,
-                                padding: "5px 10px",
-                                fontFamily: GR,
-                                fontWeight: 700,
-                                fontSize: 12.5,
-                                color: C.greenDark,
-                                cursor: "pointer",
-                                minWidth: 46,
-                              }}
-                            >
-                              {"\u20B1"}
-                              {fares[key] ?? "-"}
-                            </button>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+              ))}
+            </tbody>
+          </table>
         </div>
+        <p
+          style={{
+            margin: 0,
+            padding: "10px 16px 14px",
+            fontSize: 11.5,
+            color: C.muted,
+            fontFamily: IN,
+          }}
+        >
+          {TARIFF.beyond}
+        </p>
       </div>
       <p style={{ fontSize: 11.5, color: C.muted, fontFamily: IN, margin: 0 }}>
-        Fare edits are versioned in the database - previous rates are kept in a
-        history log. Student, senior citizen and PWD passengers automatically
-        pay 20% less than these fares.
+        Fares are calculated automatically from the road distance between the
+        exact pickup and drop-off points the passenger picked on the map. The
+        apps currently offer the regular per-person fare and the student /
+        senior citizen / PWD discount. Special trips are not offered yet.
       </p>
     </div>
   );
@@ -873,8 +818,23 @@ function LogTab({ logs, loading }) {
                     fontWeight: 600,
                   }}
                 >
-                  {getTerm(log.origin)?.short} {"\u2192"}{" "}
-                  {getTerm(log.destination)?.short}
+                  <div>{pickupLabel(log)}</div>
+                  <div>
+                    {"\u2192"} {dropoffLabel(log)}
+                  </div>
+                  {log.distanceMeters ? (
+                    <div
+                      style={{
+                        fontFamily: IN,
+                        fontWeight: 500,
+                        fontSize: 10.5,
+                        color: C.muted,
+                      }}
+                    >
+                      {log.distanceEstimated ? "About " : ""}
+                      {fmtKm(log.distanceMeters)}
+                    </div>
+                  ) : null}
                 </td>
                 <td data-label="Driver" style={{ padding: "11px 16px" }}>
                   <div style={{ fontFamily: IN, fontSize: 12, color: C.text }}>
@@ -1474,22 +1434,19 @@ export default function AdminView() {
   const [tab, setTab] = useState("drivers");
   const [drivers, setDrivers] = useState([]);
   const [tricycles, setTricycles] = useState([]);
-  const [fares, setFares] = useState({});
   const [logs, setLogs] = useState([]);
   const [verifs, setVerifs] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const loadAll = useCallback(async () => {
     try {
-      const [d, t, f, l] = await Promise.all([
+      const [d, t, l] = await Promise.all([
         getDrivers(),
         getTricycles(),
-        getFares(),
         getRequests({}),
       ]);
       setDrivers(d);
       setTricycles(t);
-      setFares(f);
       setLogs(l);
     } catch {
       /* keep last known good state */
@@ -1512,7 +1469,7 @@ export default function AdminView() {
     {
       label: "Registered Drivers",
       value: drivers.length,
-      sub: `${drivers.filter((d) => d.status === "available").length} available`,
+      sub: `${drivers.filter((d) => d.appActive).length} active in the app`,
     },
     {
       label: "Tricycle Units",
@@ -1635,7 +1592,7 @@ export default function AdminView() {
           {[
             ["drivers", "Drivers"],
             ["tricycles", "Tricycles"],
-            ["fares", "Fares"],
+            ["fares", "Tariff"],
             ["verify", "Verify"],
             ["log", "Log"],
           ].map(([key, label]) => (
@@ -1683,13 +1640,7 @@ export default function AdminView() {
         {tab === "tricycles" && (
           <TricyclesTab tricycles={tricycles} loading={loading} />
         )}
-        {tab === "fares" && (
-          <FaresTab
-            fares={fares}
-            loading={loading}
-            onUpdated={(key, v) => setFares((p) => ({ ...p, [key]: v }))}
-          />
-        )}
+        {tab === "fares" && <TariffTab />}
         {tab === "verify" && (
           <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
         )}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -11,7 +11,6 @@ import L from "leaflet";
 import {
   User,
   Lock,
-  Phone,
   LogIn,
   UserPlus,
   LogOut,
@@ -30,6 +29,7 @@ import {
   Minimize2,
   Maximize2,
   BadgePercent,
+  Route,
 } from "lucide-react";
 import {
   C,
@@ -37,18 +37,25 @@ import {
   IN,
   TERMINALS,
   COMPLEX_CENTER,
-  getTerm,
   fmtTime,
   TrikeIcon,
   Logo,
   nearestTerminal,
   useLiveLocation,
   myLocationIcon,
-  discountedFare,
   discountLabel,
+  pinIcon,
+  RouteLayer,
+  terminalPlace,
+  reverseGeocode,
+  coordLabel,
+  shortAddress,
+  pickupLabel,
+  dropoffLabel,
+  fmtKm,
 } from "./shared.jsx";
 import {
-  getFares,
+  getQuote,
   createRequest,
   cancelRequest,
   getRequestById,
@@ -57,22 +64,8 @@ import {
 import { useAuth } from "./AuthContext.jsx";
 import SignupFlow from "./SignupFlow.jsx";
 
-function makeDivIcon(color, pulse = false) {
-  return L.divIcon({
-    className: "",
-    html: `
-      <div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;">
-        ${pulse ? `<div class="gv-marker-pulse" style="width:34px;height:34px;top:0;left:0;"></div>` : ""}
-        <div style="position:relative;width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};
-          transform:rotate(-45deg);box-shadow:0 3px 8px rgba(0,0,0,0.35);border:2px solid #fff;"></div>
-      </div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 30],
-    popupAnchor: [0, -28],
-  });
-}
-const terminalIcon = makeDivIcon(C.green, true);
-const selectedIcon = makeDivIcon(C.yellow, true);
+const terminalIcon = pinIcon(C.navy, false);
+const pickupIcon = pinIcon(C.green, true);
 const droppedPinIcon = L.divIcon({
   className: "",
   html: `<div style="width:14px;height:14px;border-radius:50%;background:#DC2626;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);"></div>`,
@@ -80,7 +73,7 @@ const droppedPinIcon = L.divIcon({
   iconAnchor: [15, 15],
 });
 
-function FlyToTerminal({ target }) {
+function FlyToPoint({ target }) {
   const map = useMap();
   useEffect(() => {
     if (target) map.flyTo([target.lat, target.lng], 17, { duration: 0.6 });
@@ -318,6 +311,7 @@ function SlipRow({ label, value, icon, mono, accent }) {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
+        gap: 12,
         padding: "8px 0",
         borderBottom: `1px solid ${C.border}`,
       }}
@@ -330,6 +324,7 @@ function SlipRow({ label, value, icon, mono, accent }) {
           color: C.muted,
           fontSize: 12,
           fontFamily: IN,
+          flexShrink: 0,
         }}
       >
         {icon} {label}
@@ -340,6 +335,7 @@ function SlipRow({ label, value, icon, mono, accent }) {
           fontWeight: accent ? 700 : 500,
           fontSize: accent ? 16 : 13,
           color: accent ? C.green : C.text,
+          textAlign: "right",
         }}
       >
         {value}
@@ -445,35 +441,30 @@ function HistoryTab({ passengerId }) {
                 {s.label}
               </span>
             </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginBottom: 6,
-              }}
-            >
-              <span
+            <div style={{ marginBottom: 6 }}>
+              <div
                 style={{
                   fontFamily: GR,
                   fontWeight: 600,
-                  fontSize: 13,
+                  fontSize: 12.5,
                   color: C.text,
                 }}
               >
-                {getTerm(r.origin)?.short}
-              </span>
-              <ArrowRight size={12} color={C.muted} />
-              <span
+                {pickupLabel(r)}
+              </div>
+              <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
                   fontFamily: GR,
                   fontWeight: 600,
-                  fontSize: 13,
+                  fontSize: 12.5,
                   color: C.navy,
                 }}
               >
-                {getTerm(r.destination)?.short}
-              </span>
+                <ArrowRight size={12} color={C.muted} /> {dropoffLabel(r)}
+              </div>
             </div>
             <div
               style={{
@@ -484,6 +475,7 @@ function HistoryTab({ passengerId }) {
             >
               <span style={{ fontFamily: IN, fontSize: 11, color: C.muted }}>
                 {fmtTime(r.ts)}
+                {r.distanceMeters ? ` · ${fmtKm(r.distanceMeters)}` : ""}
                 {r.discountApplied
                   ? ` · ${discountLabel(r.discountType)} discount`
                   : ""}
@@ -506,22 +498,21 @@ function HistoryTab({ passengerId }) {
   );
 }
 
-// ── Shared location-picker step — used for BOTH "where are you now" and
-// "where are you going", same search/pin/terminal-list UX as the kiosk, plus
-// a "Use My Current Location" one-shot GPS pick on the origin step ─────────
-function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
+// ── Location step — used for BOTH pickup and drop-off ─────────────────────
+// The passenger picks an exact point on the map (their GPS position, a
+// searched address, or a dropped pin). It is shown on the map with its real
+// address, and the fare is worked out from these exact points - it is never
+// snapped to the nearest terminal. Terminals are only offered as shortcuts.
+function LocationStep({ kind, otherPlace, onPick, onBack }) {
+  const isPickup = kind === "pickup";
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [pinMode, setPinMode] = useState(false);
-  const [droppedPin, setDroppedPin] = useState(null);
-  const [snap, setSnap] = useState(null);
+  const [draft, setDraft] = useState(null); // { lat, lng, label, isGeo, resolving }
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState(null);
-  const [isGeo, setIsGeo] = useState(false);
-
-  const excludeId = isOrigin ? null : originTerm?.id;
-  const dests = TERMINALS.filter((t) => t.id !== excludeId);
+  const draftKey = useRef("");
 
   // The sheet auto-collapses during pin mode, which hides the Cancel button
   // below (it's inside this sheet's content). The parent renders a floating
@@ -552,17 +543,47 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
     return () => clearTimeout(t);
   }, [query]);
 
-  const pickLocation = (lat, lng, geo = false) => {
-    const lt = parseFloat(lat),
-      lg = parseFloat(lng);
-    setDroppedPin({ lat: lt, lng: lg });
-    setIsGeo(geo);
-    setSnap(nearestTerminal(lt, lg, excludeId));
+  // Puts the exact point on the map right away, then looks up its address.
+  const setDraftPoint = async (
+    lat,
+    lng,
+    { geo = false, label = null } = {},
+  ) => {
+    const lt = parseFloat(lat);
+    const lg = parseFloat(lng);
+    const key = `${lt},${lg}`;
+    draftKey.current = key;
+    setDraft({
+      lat: lt,
+      lng: lg,
+      label: label || coordLabel(lt, lg),
+      isGeo: geo,
+      resolving: !label,
+    });
     setPinMode(false);
     setResults([]);
     setQuery("");
     setLocationError(null);
+    if (!label) {
+      const addr = await reverseGeocode(lt, lg);
+      if (draftKey.current === key) {
+        setDraft((d) =>
+          d && `${d.lat},${d.lng}` === key
+            ? { ...d, label: addr || d.label, resolving: false }
+            : d,
+        );
+      }
+    }
   };
+
+  // A stable function for the map bridge below. If it changed on every render,
+  // the bridge would announce itself again on every render, forever.
+  const setDraftPointRef = useRef(setDraftPoint);
+  setDraftPointRef.current = setDraftPoint;
+  const onMapPick = useCallback(
+    (lat, lng) => setDraftPointRef.current(lat, lng),
+    [],
+  );
 
   const useMyLocation = () => {
     if (!navigator.geolocation) {
@@ -575,7 +596,7 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
     setLocationError(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        pickLocation(pos.coords.latitude, pos.coords.longitude, true);
+        setDraftPoint(pos.coords.latitude, pos.coords.longitude, { geo: true });
         setLocating(false);
       },
       (err) => {
@@ -598,15 +619,8 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
     );
   };
 
-  const confirmSnap = () => {
-    if (snap?.terminal)
-      onPick(snap.terminal, {
-        droppedPin,
-        isGeo,
-        setPinMode,
-        setDroppedPin,
-        setSnap,
-      });
+  const confirmDraft = () => {
+    if (draft) onPick({ lat: draft.lat, lng: draft.lng, label: draft.label });
   };
 
   return (
@@ -620,9 +634,9 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
           margin: "0 0 2px",
         }}
       >
-        {isOrigin ? "Where are you now?" : "Where are you going?"}
+        {isPickup ? "Where should we pick you up?" : "Where are you going?"}
       </h2>
-      {!isOrigin && originTerm && (
+      {!isPickup && otherPlace && (
         <p
           style={{
             fontFamily: IN,
@@ -631,12 +645,12 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
             margin: "0 0 14px",
           }}
         >
-          From {originTerm.name}
+          Pickup: {otherPlace.label}
         </p>
       )}
-      {isOrigin && <div style={{ marginBottom: 14 }} />}
+      {isPickup && <div style={{ marginBottom: 14 }} />}
 
-      {isOrigin && !snap && (
+      {isPickup && !draft && (
         <button
           onClick={useMyLocation}
           disabled={locating}
@@ -751,7 +765,11 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
           {results.map((r, i) => (
             <button
               key={i}
-              onClick={() => pickLocation(r.lat, r.lon)}
+              onClick={() =>
+                setDraftPoint(r.lat, r.lon, {
+                  label: shortAddress(r.display_name),
+                })
+              }
               style={{
                 background: C.white,
                 border: `1px solid ${C.border}`,
@@ -780,7 +798,7 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
         </div>
       )}
 
-      {!snap && (
+      {!draft && (
         <button
           onClick={() => setPinMode(true)}
           style={{
@@ -841,7 +859,7 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
         </div>
       )}
 
-      {snap?.terminal && (
+      {draft && (
         <div
           style={{
             background: C.navy,
@@ -858,45 +876,42 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
               marginBottom: 6,
             }}
           >
-            {isGeo
-              ? "Nearest terminal to your location"
-              : "Nearest terminal to your pin"}{" "}
-            ({snap.distanceMeters}m away):
+            {isPickup ? "Pickup point" : "Drop-off point"}
+            {draft.isGeo ? " (your location)" : ""} — shown on the map
           </div>
           <div
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
+              gap: 12,
             }}
           >
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div
                 style={{
                   color: "#fff",
                   fontFamily: GR,
                   fontWeight: 700,
-                  fontSize: 15,
+                  fontSize: 14,
+                  lineHeight: 1.3,
                 }}
               >
-                {snap.terminal.name}
+                {draft.resolving ? "Finding the address…" : draft.label}
               </div>
-              {!isOrigin && originTerm && (
-                <div
-                  style={{
-                    color: C.yellow,
-                    fontFamily: GR,
-                    fontSize: 13,
-                    fontWeight: 600,
-                  }}
-                >
-                  ₱{fares[`${originTerm.id}-${snap.terminal.id}`] ?? 0} official
-                  fare
-                </div>
-              )}
+              <div
+                style={{
+                  color: "rgba(255,255,255,0.45)",
+                  fontFamily: "monospace",
+                  fontSize: 10.5,
+                  marginTop: 2,
+                }}
+              >
+                {draft.lat.toFixed(5)}, {draft.lng.toFixed(5)}
+              </div>
             </div>
             <button
-              onClick={confirmSnap}
+              onClick={confirmDraft}
               style={{
                 background: C.yellow,
                 color: C.navy,
@@ -907,6 +922,7 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
                 fontWeight: 700,
                 fontSize: 13,
                 cursor: "pointer",
+                flexShrink: 0,
               }}
             >
               Use this
@@ -914,9 +930,8 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
           </div>
           <button
             onClick={() => {
-              setSnap(null);
-              setDroppedPin(null);
-              setIsGeo(false);
+              draftKey.current = "";
+              setDraft(null);
             }}
             style={{
               marginTop: 8,
@@ -942,18 +957,18 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
           margin: "0 0 8px",
         }}
       >
-        Or pick a terminal directly:
+        Or choose a terminal as the exact point:
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {dests.map((t) => (
+        {TERMINALS.map((t) => (
           <button
             key={t.id}
-            onClick={() => onPick(t)}
+            onClick={() => onPick(terminalPlace(t))}
             style={{
               background: C.surface,
               border: `1.5px solid ${C.border}`,
               borderRadius: 14,
-              padding: "14px 16px",
+              padding: "12px 16px",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
@@ -964,8 +979,8 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div
                 style={{
-                  width: 36,
-                  height: 36,
+                  width: 34,
+                  height: 34,
                   borderRadius: 10,
                   background: C.greenLight,
                   display: "flex",
@@ -974,24 +989,17 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
                   flexShrink: 0,
                 }}
               >
-                <MapPin size={16} color={C.green} />
+                <MapPin size={15} color={C.green} />
               </div>
-              <div>
-                <div
-                  style={{
-                    color: C.text,
-                    fontFamily: GR,
-                    fontWeight: 600,
-                    fontSize: 14,
-                  }}
-                >
-                  {t.name}
-                </div>
-                {!isOrigin && originTerm && (
-                  <div style={{ color: C.muted, fontFamily: IN, fontSize: 12 }}>
-                    ₱{fares[`${originTerm.id}-${t.id}`] ?? "—"} official fare
-                  </div>
-                )}
+              <div
+                style={{
+                  color: C.text,
+                  fontFamily: GR,
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                }}
+              >
+                {t.name}
               </div>
             </div>
             <ChevronRight size={16} color={C.muted} style={{ flexShrink: 0 }} />
@@ -1019,10 +1027,10 @@ function LocationStep({ isOrigin, originTerm, fares, onPick, onBack }) {
       )}
 
       <PinMarkerSync
-        droppedPin={droppedPin}
+        droppedPin={draft}
         pinMode={pinMode}
-        isGeo={isGeo}
-        onMapPick={pickLocation}
+        isGeo={!!draft?.isGeo}
+        onMapPick={onMapPick}
       />
     </div>
   );
@@ -1034,7 +1042,14 @@ function PinMarkerSync({ droppedPin, pinMode, isGeo, onMapPick }) {
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("gv-pin-state", {
-        detail: { droppedPin, pinMode, isGeo, onMapPick },
+        detail: {
+          droppedPin: droppedPin
+            ? { lat: droppedPin.lat, lng: droppedPin.lng }
+            : null,
+          pinMode,
+          isGeo,
+          onMapPick,
+        },
       }),
     );
   }, [droppedPin, pinMode, isGeo, onMapPick]);
@@ -1047,17 +1062,20 @@ export default function PassengerApp() {
   const [authMode, setAuthMode] = useState(null); // null | "login" | "signup"
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
 
-  const [flowStep, setFlowStep] = useState("origin"); // origin | destination | fare | waiting | success
-  const [origin, setOrigin] = useState(null);
-  const [dest, setDest] = useState(null);
-  const [fares, setFares] = useState({});
+  // pickup | dropoff | fare | waiting | success
+  const [flowStep, setFlowStep] = useState("pickup");
+  const [pickup, setPickup] = useState(null); // exact point { lat, lng, label }
+  const [dropoff, setDropoff] = useState(null); // exact point { lat, lng, label }
+  const [quote, setQuote] = useState(null);
+  const [quoteError, setQuoteError] = useState(null);
+  const [quoteTry, setQuoteTry] = useState(0);
   const [myRequestId, setMyRequestId] = useState(null);
   const [record, setRecord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
   // Persistent "you are here" GPS dot — always visible on the map, separate
-  // from the one-shot "Use My Current Location" picker used to select an origin.
+  // from the one-shot "Use My Current Location" picker used to select a pickup.
   const { position: myPosition } = useLiveLocation();
 
   // Pin-drop state bridged up from LocationStep so the always-visible map can render it
@@ -1073,8 +1091,8 @@ export default function PassengerApp() {
     return () => window.removeEventListener("gv-pin-state", onSync);
   }, []);
   useEffect(() => {
-    // clear pin marker whenever we leave the origin/destination steps
-    if (flowStep !== "origin" && flowStep !== "destination") {
+    // clear pin marker whenever we leave the pickup/drop-off steps
+    if (flowStep !== "pickup" && flowStep !== "dropoff") {
       setPinState({
         droppedPin: null,
         pinMode: false,
@@ -1095,8 +1113,7 @@ export default function PassengerApp() {
   const isPassenger = user?.role === "passenger";
 
   // The discount TODA staff approved on this account's ID (student / senior /
-  // pwd), or null. It applies to every ride automatically; the server works
-  // out the real fare, this is just so the screens show the right price.
+  // pwd), or null. The server applies it to the quote and the ride.
   const activeDiscount = isPassenger ? user.discountType || null : null;
 
   // While the account is pending, re-check its status now and then so the
@@ -1106,15 +1123,30 @@ export default function PassengerApp() {
     const id = setInterval(refresh, 30000);
     return () => clearInterval(id);
   }, [user?.status, refresh]);
-  const passenger = isPassenger
-    ? { id: user.passengerId, name: user.name }
-    : null;
 
+  // Work out the road distance and fare as soon as both exact points are set.
   useEffect(() => {
-    getFares()
-      .then(setFares)
-      .catch(() => setError("Could not load fares. Check your connection."));
-  }, []);
+    if (flowStep !== "fare" || !pickup || !dropoff) return;
+    let cancelled = false;
+    setQuote(null);
+    setQuoteError(null);
+    getQuote(pickup, dropoff)
+      .then((q) => {
+        if (!cancelled) setQuote(q);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = err.message
+          ? err.message.replace(/^API .* failed: /, "")
+          : "";
+        setQuoteError(
+          msg || "Couldn't work out the fare. Check your connection.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [flowStep, pickup, dropoff, quoteTry]);
 
   useEffect(() => {
     if (flowStep !== "waiting" || !myRequestId) return;
@@ -1140,20 +1172,19 @@ export default function PassengerApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flowStep, myRequestId]);
 
-  const baseFare = origin && dest ? (fares[`${origin.id}-${dest.id}`] ?? 0) : 0;
-  const fare = activeDiscount ? discountedFare(baseFare) : baseFare;
-  // Fares as shown in the terminal pickers: discounted if this passenger has one.
-  const shownFares = activeDiscount
-    ? Object.fromEntries(
-        Object.entries(fares).map(([k, v]) => [k, discountedFare(v)]),
-      )
-    : fares;
-  const flyTarget = dest || origin;
+  // The terminal whose queue the ride joins: nearest to the pickup point. It
+  // only decides which terminal's drivers see the ride - the fare uses the
+  // exact points.
+  const queueTerm = pickup
+    ? nearestTerminal(pickup.lat, pickup.lng).terminal
+    : null;
 
   const resetFlow = () => {
-    setFlowStep("origin");
-    setOrigin(null);
-    setDest(null);
+    setFlowStep("pickup");
+    setPickup(null);
+    setDropoff(null);
+    setQuote(null);
+    setQuoteError(null);
     setRecord(null);
     setMyRequestId(null);
     setError(null);
@@ -1169,31 +1200,42 @@ export default function PassengerApp() {
     resetFlow();
   };
 
-  const handlePickOrigin = (t) => {
-    setOrigin(t);
-    setFlowStep("destination");
+  const handlePickPickup = (place) => {
+    setPickup(place);
+    setFlowStep("dropoff");
   };
-  const handlePickDest = (t) => {
-    setDest(t);
+  const handlePickDropoff = (place) => {
+    setDropoff(place);
     setFlowStep("fare");
   };
 
   const handleConfirm = async () => {
+    if (!quote || !pickup || !dropoff) return;
     setSubmitting(true);
     setError(null);
     try {
-      const r = await createRequest(origin.id, dest.id, fare, passenger);
+      const r = await createRequest({
+        origin: nearestTerminal(pickup.lat, pickup.lng).terminal.id,
+        destination: nearestTerminal(dropoff.lat, dropoff.lng).terminal.id,
+        quoteToken: quote.quoteToken,
+        source: "app",
+      });
       setMyRequestId(r._id);
       setFlowStep("waiting");
     } catch (err) {
       const msg = err.message
         ? err.message.replace(/^API .* failed: /, "")
         : "";
-      setError(
-        /verif|account/i.test(msg)
-          ? msg
-          : "Couldn't send your request. Please try again.",
-      );
+      if (/quote|expired/i.test(msg)) {
+        setError(msg);
+        setQuoteTry((n) => n + 1);
+      } else {
+        setError(
+          /verif|account/i.test(msg)
+            ? msg
+            : "Couldn't send your request. Please try again.",
+        );
+      }
     }
     setSubmitting(false);
   };
@@ -1206,7 +1248,8 @@ export default function PassengerApp() {
 
   const showWelcomePanel = !loading && !isPassenger;
   const canBook = user?.status !== "rejected";
-  const inLocationStep = flowStep === "origin" || flowStep === "destination";
+  const inLocationStep = flowStep === "pickup" || flowStep === "dropoff";
+  const showRoute = !inLocationStep && pickup && dropoff;
 
   return (
     <div className="kiosk-shell">
@@ -1313,16 +1356,35 @@ export default function PassengerApp() {
           style={{ width: "100%", height: "100%" }}
         >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          <FlyToTerminal target={flyTarget} />
+          {inLocationStep && <FlyToPoint target={pinState.droppedPin} />}
           <MapClickCatcher
             active={inLocationStep && pinState.pinMode}
             onPick={(lat, lng) => pinState.onMapPick?.(lat, lng)}
           />
           <MapVisibilitySync trigger={sheetCollapsed} />
+
+          {TERMINALS.map((t) => (
+            <Marker key={t.id} position={[t.lat, t.lng]} icon={terminalIcon}>
+              <Popup>{t.name}</Popup>
+            </Marker>
+          ))}
+
           {inLocationStep && pinState.droppedPin && (
             <Marker
               position={[pinState.droppedPin.lat, pinState.droppedPin.lng]}
               icon={pinState.isGeo ? myLocationIcon : droppedPinIcon}
+            />
+          )}
+          {flowStep === "dropoff" && pickup && (
+            <Marker position={[pickup.lat, pickup.lng]} icon={pickupIcon}>
+              <Popup>Pickup: {pickup.label}</Popup>
+            </Marker>
+          )}
+          {showRoute && (
+            <RouteLayer
+              pickup={pickup}
+              dropoff={dropoff}
+              route={quote?.geometry}
             />
           )}
           {myPosition && (
@@ -1333,19 +1395,6 @@ export default function PassengerApp() {
               <Popup>You are here</Popup>
             </Marker>
           )}
-          {TERMINALS.map((t) => (
-            <Marker
-              key={t.id}
-              position={[t.lat, t.lng]}
-              icon={
-                t.id === origin?.id || t.id === dest?.id
-                  ? selectedIcon
-                  : terminalIcon
-              }
-            >
-              <Popup>{t.name}</Popup>
-            </Marker>
-          ))}
         </MapContainer>
 
         {inLocationStep && pinState.pinMode && (
@@ -1657,129 +1706,246 @@ export default function PassengerApp() {
 
             {tab === "ride" && canBook && (
               <>
-                {flowStep === "origin" && (
-                  <LocationStep
-                    isOrigin
-                    fares={shownFares}
-                    onPick={handlePickOrigin}
-                  />
+                {flowStep === "pickup" && (
+                  <LocationStep kind="pickup" onPick={handlePickPickup} />
                 )}
 
-                {flowStep === "destination" && origin && (
+                {flowStep === "dropoff" && pickup && (
                   <LocationStep
-                    isOrigin={false}
-                    originTerm={origin}
-                    fares={shownFares}
-                    onPick={handlePickDest}
+                    kind="dropoff"
+                    otherPlace={pickup}
+                    onPick={handlePickDropoff}
                     onBack={() => {
-                      setFlowStep("origin");
-                      setOrigin(null);
+                      setFlowStep("pickup");
+                      setPickup(null);
                     }}
                   />
                 )}
 
-                {flowStep === "fare" && origin && dest && (
+                {flowStep === "fare" && pickup && dropoff && (
                   <div>
                     <div
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 10,
-                        marginBottom: 16,
-                        fontFamily: IN,
-                        fontSize: 13,
-                      }}
-                    >
-                      <span style={{ color: C.text, fontWeight: 600 }}>
-                        {origin.short}
-                      </span>
-                      <ArrowRight size={14} color={C.muted} />
-                      <span style={{ color: C.green, fontWeight: 600 }}>
-                        {dest.short}
-                      </span>
-                    </div>
-                    <div
-                      style={{
-                        background: C.navy,
-                        borderRadius: 18,
-                        padding: "22px 20px",
-                        textAlign: "center",
-                        marginBottom: 16,
+                        background: C.surface,
+                        borderRadius: 14,
+                        padding: "12px 14px",
+                        border: `1px solid ${C.border}`,
+                        marginBottom: 14,
                       }}
                     >
                       <div
                         style={{
-                          color: "rgba(247,195,68,0.6)",
-                          fontFamily: GR,
-                          fontSize: 10,
-                          letterSpacing: 2,
-                          textTransform: "uppercase",
-                          marginBottom: 8,
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "flex-start",
+                          fontFamily: IN,
+                          fontSize: 12.5,
+                          color: C.text,
+                          marginBottom: 6,
                         }}
                       >
-                        {activeDiscount
-                          ? `${discountLabel(activeDiscount)} Discount Fare`
-                          : "TODA-Approved Official Fare"}
-                      </div>
-                      <div
-                        style={{
-                          color: C.yellow,
-                          fontFamily: GR,
-                          fontWeight: 700,
-                          lineHeight: 1,
-                          fontSize: "clamp(48px, 14vw, 64px)",
-                        }}
-                      >
-                        ₱{fare}
-                        <span
-                          style={{
-                            fontSize: "0.35em",
-                            opacity: 0.5,
-                            fontWeight: 400,
-                          }}
-                        >
-                          .00
+                        <MapPin
+                          size={14}
+                          color={C.green}
+                          style={{ flexShrink: 0, marginTop: 2 }}
+                        />
+                        <span>
+                          <span style={{ color: C.muted }}>Pickup: </span>
+                          {pickup.label}
                         </span>
                       </div>
-                      {activeDiscount && (
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          alignItems: "flex-start",
+                          fontFamily: IN,
+                          fontSize: 12.5,
+                          color: C.text,
+                        }}
+                      >
+                        <MapPin
+                          size={14}
+                          color="#B7881A"
+                          style={{ flexShrink: 0, marginTop: 2 }}
+                        />
+                        <span>
+                          <span style={{ color: C.muted }}>Drop-off: </span>
+                          {dropoff.label}
+                        </span>
+                      </div>
+                    </div>
+
+                    {!quote && !quoteError && (
+                      <div
+                        style={{
+                          background: C.navy,
+                          borderRadius: 18,
+                          padding: "30px 20px",
+                          textAlign: "center",
+                          marginBottom: 16,
+                          color: "rgba(255,255,255,0.7)",
+                          fontFamily: IN,
+                          fontSize: 13,
+                        }}
+                      >
+                        Working out the route and fare…
+                      </div>
+                    )}
+
+                    {quoteError && (
+                      <div
+                        style={{
+                          background: "#FEE2E2",
+                          color: "#991B1B",
+                          borderRadius: 12,
+                          padding: "12px 14px",
+                          fontFamily: IN,
+                          fontSize: 12.5,
+                          marginBottom: 16,
+                        }}
+                      >
+                        {quoteError}
+                        <div>
+                          <button
+                            onClick={() => setQuoteTry((n) => n + 1)}
+                            style={{
+                              marginTop: 8,
+                              background: "#991B1B",
+                              color: "#fff",
+                              border: "none",
+                              borderRadius: 8,
+                              padding: "7px 12px",
+                              fontFamily: GR,
+                              fontWeight: 700,
+                              fontSize: 12,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Try again
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {quote && (
+                      <div
+                        style={{
+                          background: C.navy,
+                          borderRadius: 18,
+                          padding: "22px 20px",
+                          textAlign: "center",
+                          marginBottom: 16,
+                        }}
+                      >
+                        <div
+                          style={{
+                            color: "rgba(247,195,68,0.6)",
+                            fontFamily: GR,
+                            fontSize: 10,
+                            letterSpacing: 2,
+                            textTransform: "uppercase",
+                            marginBottom: 8,
+                          }}
+                        >
+                          {quote.discountApplied
+                            ? `${discountLabel(quote.discountType)} Discount Fare`
+                            : "TODA-Approved Official Fare"}
+                        </div>
+                        <div
+                          style={{
+                            color: C.yellow,
+                            fontFamily: GR,
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            fontSize: "clamp(48px, 14vw, 64px)",
+                          }}
+                        >
+                          ₱{quote.fare}
+                          <span
+                            style={{
+                              fontSize: "0.35em",
+                              opacity: 0.5,
+                              fontWeight: 400,
+                            }}
+                          >
+                            .00
+                          </span>
+                        </div>
                         <div
                           style={{
                             marginTop: 8,
-                            color: "rgba(255,255,255,0.6)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 6,
+                            color: "rgba(255,255,255,0.7)",
                             fontFamily: IN,
-                            fontSize: 12,
+                            fontSize: 12.5,
                           }}
                         >
-                          Regular fare ₱{baseFare}.00 · 20% off
+                          <Route size={13} />
+                          {quote.estimated ? "About " : ""}
+                          {fmtKm(quote.distanceMeters)} by road
+                          {quote.discountApplied
+                            ? ` · regular ₱${quote.regularFare}.00, 20% off`
+                            : ""}
                         </div>
-                      )}
-                      <div
+                        {quote.estimated && (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              color: "rgba(255,255,255,0.4)",
+                              fontFamily: IN,
+                              fontSize: 11,
+                            }}
+                          >
+                            The route service is busy, so this distance is an
+                            estimate.
+                          </div>
+                        )}
+                        <div
+                          style={{
+                            marginTop: 10,
+                            color: "rgba(255,255,255,0.4)",
+                            fontFamily: IN,
+                            fontSize: 11.5,
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          Government-mandated rate — drivers cannot charge more
+                        </div>
+                      </div>
+                    )}
+
+                    {queueTerm && (
+                      <p
                         style={{
-                          marginTop: 10,
-                          color: "rgba(255,255,255,0.4)",
                           fontFamily: IN,
                           fontSize: 11.5,
-                          lineHeight: 1.5,
+                          color: C.muted,
+                          margin: "0 0 12px",
+                          textAlign: "center",
                         }}
                       >
-                        Government-mandated rate — drivers cannot charge more
-                      </div>
-                    </div>
+                        Your request goes to the {queueTerm.short} driver queue.
+                      </p>
+                    )}
+
                     <button
                       onClick={handleConfirm}
-                      disabled={submitting}
+                      disabled={submitting || !quote}
                       style={{
                         width: "100%",
                         padding: "16px 0",
                         borderRadius: 14,
                         border: "none",
-                        background: submitting ? C.muted : C.green,
+                        background: submitting || !quote ? C.muted : C.green,
                         color: "#fff",
                         fontSize: 15,
                         fontWeight: 700,
                         fontFamily: GR,
-                        cursor: submitting ? "default" : "pointer",
+                        cursor: submitting || !quote ? "default" : "pointer",
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
@@ -1791,7 +1957,7 @@ export default function PassengerApp() {
                       {submitting ? "Sending…" : "Confirm & Request Trip"}
                     </button>
                     <button
-                      onClick={() => setFlowStep("destination")}
+                      onClick={() => setFlowStep("dropoff")}
                       style={{
                         background: "transparent",
                         border: "none",
@@ -1803,7 +1969,7 @@ export default function PassengerApp() {
                         padding: "8px 0",
                       }}
                     >
-                      ← Change destination
+                      ← Change drop-off
                     </button>
                   </div>
                 )}
@@ -1963,6 +2129,23 @@ export default function PassengerApp() {
                         value={record.plate}
                         mono
                       />
+                      <SlipRow
+                        icon={<MapPin size={13} />}
+                        label="Pickup"
+                        value={pickupLabel(record)}
+                      />
+                      <SlipRow
+                        icon={<MapPin size={13} />}
+                        label="Drop-off"
+                        value={dropoffLabel(record)}
+                      />
+                      {record.distanceMeters ? (
+                        <SlipRow
+                          icon={<Route size={13} />}
+                          label="Distance"
+                          value={`${record.distanceEstimated ? "About " : ""}${fmtKm(record.distanceMeters)}`}
+                        />
+                      ) : null}
                       {record.discountApplied && (
                         <SlipRow
                           icon={<BadgePercent size={13} />}

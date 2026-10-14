@@ -1,6 +1,7 @@
 import { getDb } from "./_db.js";
 import { getSessionFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
+import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
 
 // Policy switch: may a passenger whose account is still pending staff
 // verification book rides? true = yes (temporary account works, flagged on the
@@ -11,12 +12,6 @@ const PENDING_CAN_BOOK = true;
 // Kiosk rides must be accepted by an NFC card tap. Only one may be pending per
 // kiosk at a time; stale ones expire so the kiosk can never get stuck.
 const KIOSK_PENDING_TTL_MIN = 10;
-
-// Fare discount for students, senior citizens and PWDs: 80% of the regular
-// fare (15 -> 12, 20 -> 16), per the official TODA fare matrix. Keep in sync
-// with discountedFare() in src/shared.jsx.
-const DISCOUNT_TYPES = ["student", "senior", "pwd"];
-const discountedFare = (regular) => Math.round(regular * 0.8);
 
 async function nextId(db, name, prefix) {
   const result = await db
@@ -89,22 +84,27 @@ export default async function handler(req, res) {
 
     // POST /api/requests  - kiosk or passenger app creates a pending ride request
     if (req.method === "POST" && !id && !action) {
-      const { origin: o, destination } = req.body || {};
+      // origin / destination are the TERMINALS nearest to the pickup and
+      // drop-off points. They only decide which terminal's queue the ride goes
+      // to and where the tricycle ends up; the exact points and the fare come
+      // from the signed quote below.
+      const { origin: o, destination, quoteToken } = req.body || {};
       if (!isNonEmptyString(o) || !isNonEmptyString(destination)) {
         return res
           .status(400)
           .json({ error: "origin and destination are required" });
       }
 
-      // The fare always comes from the database, never from the browser, so a
-      // tampered request can't set its own price or discount.
-      const fareDoc = await db
-        .collection("fares")
-        .findOne({ _id: `${o}-${destination}` });
-      if (!fareDoc || typeof fareDoc.fare !== "number") {
-        return res.status(400).json({ error: "No fare is set for this route" });
+      // The route and fare always come from a quote the server signed (see
+      // /api/quote), never from the browser, so a tampered request can't set
+      // its own distance, price or discount.
+      const quote = verifyQuote(quoteToken);
+      if (!quote) {
+        return res.status(400).json({
+          error: "Your fare quote expired. Please go back and try again.",
+        });
       }
-      const regularFare = fareDoc.fare;
+      const regularFare = quote.regularFare;
 
       // Passenger identity is derived from the session, never trusted from the
       // request body - otherwise anyone could tag a ride with someone else's
@@ -152,7 +152,8 @@ export default async function handler(req, res) {
       }
 
       let identity = {};
-      let pricing = { fare: regularFare };
+      let passengerDoc = null;
+      let kioskClaim = null;
 
       if (session?.role === "passenger") {
         const p = await db
@@ -182,15 +183,9 @@ export default async function handler(req, res) {
           passengerStatus: status,
         };
         // A discount staff approved on the passenger's ID applies
-        // automatically. Pending accounts pay the regular fare until then.
-        if (status === "verified" && DISCOUNT_TYPES.includes(p.discountType)) {
-          pricing = {
-            fare: discountedFare(regularFare),
-            regularFare,
-            discountType: p.discountType,
-            discountApplied: true,
-          };
-        }
+        // automatically. Pending accounts pay the regular fare until then
+        // (buildPricing checks the status).
+        passengerDoc = p;
       } else if (source === "kiosk") {
         // At the kiosk the passenger only says which discount they are
         // claiming. It is not applied for real until the driver checks the ID
@@ -200,20 +195,26 @@ export default async function handler(req, res) {
           if (typeof claim !== "string" || !DISCOUNT_TYPES.includes(claim)) {
             return res.status(400).json({ error: "Invalid discount type" });
           }
-          pricing = {
-            fare: discountedFare(regularFare),
-            regularFare,
-            discountClaim: claim,
-            discountPending: true,
-          };
+          kioskClaim = claim;
         }
       }
+
+      const pricing = buildPricing(regularFare, {
+        passenger: passengerDoc,
+        source,
+        claim: kioskClaim,
+      });
 
       const reqId = await nextId(db, "requests", "DR");
       const doc = {
         _id: reqId,
         origin: o,
         destination,
+        // Exact points the passenger picked on the map (from the signed quote)
+        pickup: quote.pickup,
+        dropoff: quote.dropoff,
+        distanceMeters: quote.meters,
+        distanceEstimated: !!quote.estimated,
         ...pricing,
         status: "pending",
         source,
@@ -231,12 +232,13 @@ export default async function handler(req, res) {
     // without one). Dispatches the highest-priority pending request at that
     // terminal (kiosk-created first, then oldest) to the card's linked driver.
     //
-    // Kiosk rides are simply RECORDED as completed at the moment of the tap:
-    // the kiosk exists for drivers who have no phone, so they never open the
-    // Driver app. For a kiosk ride with a discount claim, the tap is also the
-    // driver confirming they checked the passenger's ID, so the discount is
-    // applied. Rides booked in the passenger app still become "dispatched" and
-    // are finished in the Driver app.
+    // EVERY ride accepted by a card tap is simply RECORDED as completed at the
+    // moment of the tap: the kiosk exists for drivers who have no phone, so
+    // they never open the Driver app (and can never get stuck as "on_trip").
+    // For a kiosk ride with a discount claim, the tap is also the driver
+    // confirming they checked the passenger's ID, so the discount is applied.
+    // (Rides accepted inside the Driver app itself still use dispatched ->
+    // complete, see action=accept below.)
     if (req.method === "POST" && !id && action === "nfc-accept") {
       const { nfcId, origin: term } = req.body || {};
       if (
@@ -280,25 +282,24 @@ export default async function handler(req, res) {
         return res.status(404).json({ error: "No pending requests right now" });
 
       const nowIso = new Date().toISOString();
-      const isKioskRide = pendingReq.source === "kiosk";
 
       const update = {
-        status: isKioskRide ? "completed" : "dispatched",
+        status: "completed",
         driver: driver.name,
         driverId: driver._id,
         unit: driver.unit,
         plate: driver.plate || "N/A",
         acceptedAt: nowIso,
+        completedAt: nowIso,
+        recordedViaNfc: true,
       };
-      if (isKioskRide) {
-        update.completedAt = nowIso;
-        update.recordedViaNfc = true;
-        if (pendingReq.discountClaim) {
-          update.discountType = pendingReq.discountClaim;
-          update.discountApplied = true;
-          update.discountPending = false;
-          update.discountConfirmedBy = driver._id;
-        }
+      // Kiosk discount claim: the driver's tap confirms they checked the ID.
+      // (App rides already carry a staff-verified discount from creation.)
+      if (pendingReq.discountClaim) {
+        update.discountType = pendingReq.discountClaim;
+        update.discountApplied = true;
+        update.discountPending = false;
+        update.discountConfirmedBy = driver._id;
       }
 
       const result = await col.findOneAndUpdate(
@@ -312,26 +313,14 @@ export default async function handler(req, res) {
           .status(409)
           .json({ error: "That request was just taken. Try again." });
 
-      if (isKioskRide) {
-        // Trip is already on record: the driver stays available and their
-        // tricycle is now listed at the drop-off terminal.
-        await db
-          .collection("tricycles")
-          .updateOne(
-            { driverId: driver._id },
-            { $set: { status: "available", terminal: doc.destination } },
-          );
-      } else {
-        await db
-          .collection("drivers")
-          .updateOne({ _id: driver._id }, { $set: { status: "on_trip" } });
-        await db
-          .collection("tricycles")
-          .updateOne(
-            { driverId: driver._id },
-            { $set: { status: "on_trip", terminal: null } },
-          );
-      }
+      // Trip is already on record: the driver stays available and their
+      // tricycle is now listed at the drop-off terminal.
+      await db
+        .collection("tricycles")
+        .updateOne(
+          { driverId: driver._id },
+          { $set: { status: "available", terminal: doc.destination } },
+        );
 
       return res.status(200).json(doc);
     }

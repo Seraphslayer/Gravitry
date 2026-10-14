@@ -1,6 +1,12 @@
 import { useState, useEffect, useMemo } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
-import L from "leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Polyline,
+  useMap,
+} from "react-leaflet";
 import {
   ArrowRight,
   Clock,
@@ -11,6 +17,9 @@ import {
   LogOut,
   MapPin,
   Wifi,
+  LocateFixed,
+  Navigation,
+  User,
 } from "lucide-react";
 import {
   C,
@@ -22,12 +31,20 @@ import {
   TrikeIcon,
   useLiveLocation,
   myLocationIcon,
+  pickupLabel,
+  dropoffLabel,
+  fmtKm,
+  pinIcon,
+  pickupPoint,
+  dropoffPoint,
+  fetchRoute,
 } from "./shared.jsx";
 import {
   getDrivers,
   getRequests,
   acceptRequest,
   completeRequest,
+  sendPresence,
 } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 
@@ -53,43 +70,99 @@ function fmtDistance(m) {
   return `${(m / 1000).toFixed(1)} km away`;
 }
 
-function makeDivIcon(color, pulse = false) {
-  return L.divIcon({
-    className: "",
-    html: `
-      <div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;">
-        ${pulse ? `<div class="gv-marker-pulse" style="width:34px;height:34px;top:0;left:0;"></div>` : ""}
-        <div style="position:relative;width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};
-          transform:rotate(-45deg);box-shadow:0 3px 8px rgba(0,0,0,0.35);border:2px solid #fff;"></div>
-      </div>`,
-    iconSize: [34, 34],
-    iconAnchor: [17, 30],
-    popupAnchor: [0, -28],
-  });
-}
-const terminalIcon = makeDivIcon(C.green, true);
-const destIcon = makeDivIcon(C.yellow, true);
+// Opens Google Maps turn-by-turn directions to a point (works on any phone).
+const directionsUrl = (p) =>
+  `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
 
-function FlyTo({ target }) {
+const terminalIcon = pinIcon(C.navy, false);
+const pickupIcon = pinIcon(C.green, false);
+const focusPickupIcon = pinIcon(C.green, true);
+const dropoffIcon = pinIcon(C.yellow, true);
+
+// Road route between two points, re-fetched only when the points really change.
+// Coordinates are rounded (about 100 m) so a moving GPS dot doesn't trigger a
+// new lookup on every tiny movement.
+function useRoute(a, b) {
+  const r3 = (n) => Math.round(n * 1000) / 1000;
+  const key =
+    a && b ? `${r3(a.lat)},${r3(a.lng)}|${r3(b.lat)},${r3(b.lng)}` : null;
+  const [route, setRoute] = useState(null);
+  useEffect(() => {
+    if (!key) {
+      setRoute(null);
+      return;
+    }
+    let cancelled = false;
+    fetchRoute(a, b).then((r) => {
+      if (!cancelled) setRoute(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return route;
+}
+
+const toLatLngs = (coords) => coords.map(([lng, lat]) => [lat, lng]);
+
+// Zooms the map so the driver, the passenger's pickup point and the drop-off
+// all fit. Only runs when the focused ride changes (or the first GPS fix
+// arrives), so it never fights the driver while they pan around.
+function FitTo({ points, fitKey }) {
   const map = useMap();
   useEffect(() => {
-    if (target) map.flyTo([target.lat, target.lng], 17, { duration: 0.6 });
-  }, [target, map]);
+    const pts = points.filter(Boolean);
+    if (pts.length === 0) return;
+    if (pts.length === 1) {
+      map.flyTo([pts[0].lat, pts[0].lng], 17, { duration: 0.6 });
+    } else {
+      map.fitBounds(
+        pts.map((p) => [p.lat, p.lng]),
+        { padding: [60, 60], maxZoom: 17 },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey, map]);
   return null;
 }
 
-function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
+// "Center on me" button support.
+function Recenter({ position, tick }) {
+  const map = useMap();
+  useEffect(() => {
+    if (tick > 0 && position)
+      map.flyTo([position.lat, position.lng], 17, { duration: 0.6 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, map]);
+  return null;
+}
+
+function RequestCard({
+  req,
+  onAccept,
+  onSelect,
+  accepting,
+  distance,
+  isNearest,
+  selected,
+}) {
   const wait = Math.round((Date.now() - new Date(req.ts).getTime()) / 60000);
   const distLabel = fmtDistance(distance);
   const nfcOnly = req.source === "kiosk"; // kiosk rides are accepted by card tap only
+  const pickup = pickupPoint(req);
   return (
     <div
+      onClick={() => onSelect(req._id)}
       style={{
         background: C.white,
         borderRadius: 14,
         padding: 16,
-        border: `1px solid ${isNearest ? C.green : C.border}`,
-        boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
+        border: `${selected ? 2 : 1}px solid ${selected ? C.green : C.border}`,
+        boxShadow: selected
+          ? "0 2px 12px rgba(28,124,84,0.18)"
+          : "0 1px 6px rgba(0,0,0,0.06)",
+        cursor: "pointer",
       }}
     >
       <div
@@ -148,7 +221,7 @@ function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
           display: "flex",
           alignItems: "center",
           gap: 10,
-          marginBottom: distLabel ? 8 : 14,
+          marginBottom: 8,
         }}
       >
         <div style={{ flex: 1 }}>
@@ -160,7 +233,7 @@ function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
               textTransform: "uppercase",
             }}
           >
-            Pickup
+            Passenger is at
           </div>
           <div
             style={{
@@ -170,7 +243,7 @@ function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
               color: C.text,
             }}
           >
-            {getTerm(req.origin)?.name}
+            {pickupLabel(req)}
           </div>
         </div>
         <ArrowRight size={16} color={C.muted} />
@@ -193,11 +266,48 @@ function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
               color: C.navy,
             }}
           >
-            {getTerm(req.destination)?.name}
+            {dropoffLabel(req)}
           </div>
         </div>
       </div>
-      {distLabel && (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          flexWrap: "wrap",
+          color: C.muted,
+          fontFamily: IN,
+          fontSize: 12,
+          marginBottom: 12,
+        }}
+      >
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <MapPin size={12} color={C.green} />
+          {distLabel ? `Pickup is ${distLabel}` : "Pickup location"}
+          {req.distanceMeters ? ` · trip ${fmtKm(req.distanceMeters)}` : ""}
+        </span>
+        {pickup && (
+          <a
+            href={directionsUrl(pickup)}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              color: C.green,
+              fontWeight: 600,
+              textDecoration: "none",
+            }}
+          >
+            <Navigation size={12} /> Directions
+          </a>
+        )}
+      </div>
+      {req.passengerName && (
         <div
           style={{
             display: "flex",
@@ -209,7 +319,7 @@ function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
             marginBottom: 12,
           }}
         >
-          <MapPin size={12} color={C.green} /> Pickup is {distLabel}
+          <User size={12} /> Passenger: {req.passengerName}
         </div>
       )}
       <div
@@ -248,7 +358,10 @@ function RequestCard({ req, onAccept, accepting, distance, isNearest }) {
           </div>
         ) : (
           <button
-            onClick={() => onAccept(req)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAccept(req);
+            }}
             disabled={accepting}
             style={{
               background: accepting ? C.muted : C.green,
@@ -280,12 +393,14 @@ export default function DriverView() {
   const [online, setOnline] = useState(true);
   const [pending, setPending] = useState([]);
   const [activeTrip, setActiveTrip] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
+  const [recenterTick, setRecenterTick] = useState(0);
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState(null);
 
-  // Persistent "you are here" GPS dot — lets the driver see their own live
-  // position on the map alongside the terminals and any active-trip destination.
-  const { position: myPosition } = useLiveLocation();
+  // Persistent "you are here" GPS dot - the driver always sees their own live
+  // position on the map, together with the passenger's pickup point.
+  const { position: myPosition, error: locationError } = useLiveLocation();
 
   useEffect(() => {
     getDrivers()
@@ -316,6 +431,35 @@ export default function DriverView() {
     return () => clearInterval(id);
   }, [online, user.driverId]);
 
+  // Presence heartbeat: lets the admin see this driver as Active (Online) or
+  // Off duty. Sent right away whenever the Online / Offline switch changes,
+  // then every 15 seconds while Online. If the app stops reporting (phone off,
+  // no signal, tab closed) the server drops the driver to Off duty by itself.
+  useEffect(() => {
+    sendPresence(online).catch(() => {});
+    if (!online) return;
+    const id = setInterval(() => sendPresence(true).catch(() => {}), 15000);
+    return () => clearInterval(id);
+  }, [online]);
+
+  // Closing or leaving the page counts as going offline right away.
+  useEffect(() => {
+    const onLeave = () => {
+      try {
+        navigator.sendBeacon(
+          "/api/drivers?action=presence",
+          new Blob([JSON.stringify({ online: false })], {
+            type: "application/json",
+          }),
+        );
+      } catch {
+        /* the server timeout will cover it */
+      }
+    };
+    window.addEventListener("pagehide", onLeave);
+    return () => window.removeEventListener("pagehide", onLeave);
+  }, []);
+
   // Reference point for "near me": live GPS if we have it, otherwise the
   // driver's home terminal.
   const refPoint = useMemo(() => {
@@ -325,10 +469,11 @@ export default function DriverView() {
   }, [myPosition]);
 
   // Pending rides with their pickup distance, nearest first. Ties (and rides
-  // whose terminal is unknown) fall back to oldest first.
+  // whose pickup is unknown) fall back to oldest first.
   const sortedPending = useMemo(() => {
     const withDist = pending.map((r) => {
-      const t = getTerm(r.origin);
+      // exact pickup point if the ride has one, else its terminal
+      const t = pickupPoint(r);
       const dist =
         refPoint && t
           ? distanceMeters(refPoint.lat, refPoint.lng, t.lat, t.lng)
@@ -336,14 +481,28 @@ export default function DriverView() {
       return { req: r, dist };
     });
     withDist.sort(
-      (a, b) =>
-        a.dist - b.dist || new Date(a.req.ts) - new Date(b.req.ts),
+      (a, b) => a.dist - b.dist || new Date(a.req.ts) - new Date(b.req.ts),
     );
     return withDist;
   }, [pending, refPoint]);
 
-  const destTerm = activeTrip ? getTerm(activeTrip.destination) : null;
-  const flyTarget = destTerm || getTerm(HOME_TERMINAL);
+  // The ride shown on the map: the active trip if there is one, otherwise the
+  // ride the driver tapped, otherwise the nearest one.
+  const focusReq = useMemo(() => {
+    if (activeTrip) return activeTrip;
+    const picked = sortedPending.find((x) => x.req._id === selectedId);
+    return (picked || sortedPending[0])?.req || null;
+  }, [activeTrip, sortedPending, selectedId]);
+
+  const focusPickup = focusReq ? pickupPoint(focusReq) : null;
+  const focusDropoff = focusReq ? dropoffPoint(focusReq) : null;
+  const driverPoint = myPosition
+    ? { lat: myPosition.lat, lng: myPosition.lng }
+    : null;
+
+  // you -> passenger, and passenger -> drop-off
+  const toPickup = useRoute(driverPoint, focusPickup);
+  const tripRoute = useRoute(focusPickup, focusDropoff);
 
   const handleAccept = async (req) => {
     setAccepting(true);
@@ -373,6 +532,19 @@ export default function DriverView() {
     }
   };
 
+  const handleLogout = async () => {
+    try {
+      await sendPresence(false);
+    } catch {
+      /* log out anyway */
+    }
+    logout();
+  };
+
+  const fitKey = `${focusReq?._id || "none"}|${!!myPosition}`;
+  const activePickup = activeTrip ? pickupPoint(activeTrip) : null;
+  const activeDropoff = activeTrip ? dropoffPoint(activeTrip) : null;
+
   return (
     <div className="kiosk-shell">
       <div className="kiosk-map-zone">
@@ -384,28 +556,89 @@ export default function DriverView() {
           style={{ width: "100%", height: "100%" }}
         >
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-          <FlyTo target={flyTarget} />
+          <FitTo
+            points={[driverPoint, focusPickup, focusDropoff]}
+            fitKey={fitKey}
+          />
+          <Recenter position={myPosition} tick={recenterTick} />
+
+          {TERMINALS.map((t) => (
+            <Marker key={t.id} position={[t.lat, t.lng]} icon={terminalIcon}>
+              <Popup>{t.name}</Popup>
+            </Marker>
+          ))}
+
+          {/* trip route: passenger -> drop-off (dashed green) */}
+          {tripRoute && (
+            <Polyline
+              positions={toLatLngs(tripRoute.coords)}
+              pathOptions={{
+                color: C.green,
+                weight: 5,
+                opacity: 0.75,
+                dashArray: "8 8",
+              }}
+            />
+          )}
+          {/* your route to the passenger (solid navy) */}
+          {toPickup && (
+            <Polyline
+              positions={toLatLngs(toPickup.coords)}
+              pathOptions={{ color: C.navy, weight: 5, opacity: 0.85 }}
+            />
+          )}
+
+          {/* where each waiting passenger is */}
+          {!activeTrip &&
+            online &&
+            sortedPending.map(({ req }) => {
+              const p = pickupPoint(req);
+              if (!p || req._id === focusReq?._id) return null;
+              return (
+                <Marker
+                  key={req._id}
+                  position={[p.lat, p.lng]}
+                  icon={pickupIcon}
+                  eventHandlers={{ click: () => setSelectedId(req._id) }}
+                >
+                  <Popup>
+                    Passenger: {pickupLabel(req)} · ₱{req.fare}.00
+                  </Popup>
+                </Marker>
+              );
+            })}
+
+          {/* the focused passenger's pickup point and drop-off point */}
+          {focusPickup && (
+            <Marker
+              position={[focusPickup.lat, focusPickup.lng]}
+              icon={focusPickupIcon}
+            >
+              <Popup>
+                Passenger is here: {pickupLabel(focusReq)}
+                {focusReq?.passengerName ? ` (${focusReq.passengerName})` : ""}
+              </Popup>
+            </Marker>
+          )}
+          {focusDropoff && (
+            <Marker
+              position={[focusDropoff.lat, focusDropoff.lng]}
+              icon={dropoffIcon}
+            >
+              <Popup>Drop-off: {dropoffLabel(focusReq)}</Popup>
+            </Marker>
+          )}
+
+          {/* you */}
           {myPosition && (
             <Marker
               position={[myPosition.lat, myPosition.lng]}
               icon={myLocationIcon}
+              zIndexOffset={1000}
             >
               <Popup>You are here</Popup>
             </Marker>
           )}
-          {TERMINALS.map((t) => (
-            <Marker
-              key={t.id}
-              position={[t.lat, t.lng]}
-              icon={
-                activeTrip && t.id === activeTrip.destination
-                  ? destIcon
-                  : terminalIcon
-              }
-            >
-              <Popup>{t.name}</Popup>
-            </Marker>
-          ))}
         </MapContainer>
 
         <div
@@ -475,7 +708,7 @@ export default function DriverView() {
             </span>
           </button>
           <button
-            onClick={logout}
+            onClick={handleLogout}
             title="Log out"
             style={{
               width: 34,
@@ -493,6 +726,31 @@ export default function DriverView() {
             <LogOut size={14} color={C.muted} />
           </button>
         </div>
+
+        <button
+          onClick={() => setRecenterTick((n) => n + 1)}
+          disabled={!myPosition}
+          title="Center the map on my location"
+          style={{
+            position: "absolute",
+            top: "calc(60px + var(--safe-top))",
+            right: 12,
+            zIndex: 400,
+            width: 38,
+            height: 38,
+            borderRadius: "50%",
+            background: "rgba(255,255,255,0.95)",
+            border: "none",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+            cursor: myPosition ? "pointer" : "default",
+            opacity: myPosition ? 1 : 0.5,
+          }}
+        >
+          <LocateFixed size={17} color={C.navy} />
+        </button>
 
         {activeTrip && (
           <div
@@ -515,7 +773,9 @@ export default function DriverView() {
             <Truck size={15} color={C.yellow} />
             <span style={{ color: "#fff", fontFamily: IN, fontSize: 12.5 }}>
               Heading to{" "}
-              <strong style={{ color: C.yellow }}>{destTerm?.name}</strong>
+              <strong style={{ color: C.yellow }}>
+                {dropoffLabel(activeTrip)}
+              </strong>
             </span>
           </div>
         )}
@@ -537,6 +797,31 @@ export default function DriverView() {
             }}
           >
             {error}
+          </div>
+        )}
+
+        {!myPosition && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              background: "#FEF3C7",
+              color: "#92400E",
+              borderRadius: 10,
+              padding: "8px 12px",
+              fontSize: 12,
+              fontFamily: IN,
+              marginBottom: 12,
+              lineHeight: 1.45,
+            }}
+          >
+            <LocateFixed size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>
+              {locationError
+                ? "Location is off, so your position isn't shown. Allow location access in your browser to see where you are."
+                : "Finding your location…"}
+            </span>
           </div>
         )}
 
@@ -627,7 +912,7 @@ export default function DriverView() {
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
-                marginBottom: 14,
+                marginBottom: 10,
               }}
             >
               <div style={{ flex: 1 }}>
@@ -639,7 +924,7 @@ export default function DriverView() {
                     textTransform: "uppercase",
                   }}
                 >
-                  From
+                  Passenger is at
                 </div>
                 <div
                   style={{
@@ -649,7 +934,7 @@ export default function DriverView() {
                     color: "#fff",
                   }}
                 >
-                  {getTerm(activeTrip.origin)?.name}
+                  {pickupLabel(activeTrip)}
                 </div>
               </div>
               <ArrowRight size={15} color="rgba(255,255,255,0.4)" />
@@ -672,10 +957,75 @@ export default function DriverView() {
                     color: C.yellow,
                   }}
                 >
-                  {getTerm(activeTrip.destination)?.name}
+                  {dropoffLabel(activeTrip)}
                 </div>
               </div>
             </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 14,
+                flexWrap: "wrap",
+                marginBottom: 14,
+                fontFamily: IN,
+                fontSize: 12,
+              }}
+            >
+              {activePickup && (
+                <a
+                  href={directionsUrl(activePickup)}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    color: C.yellow,
+                    textDecoration: "none",
+                    fontWeight: 600,
+                  }}
+                >
+                  <Navigation size={12} /> Directions to passenger
+                </a>
+              )}
+              {activeDropoff && (
+                <a
+                  href={directionsUrl(activeDropoff)}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    color: C.yellow,
+                    textDecoration: "none",
+                    fontWeight: 600,
+                  }}
+                >
+                  <Navigation size={12} /> Directions to drop-off
+                </a>
+              )}
+            </div>
+            {(activeTrip.passengerName || activeTrip.distanceMeters) && (
+              <div
+                style={{
+                  color: "rgba(255,255,255,0.6)",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  marginBottom: 14,
+                }}
+              >
+                {activeTrip.passengerName
+                  ? `Passenger: ${activeTrip.passengerName}`
+                  : ""}
+                {activeTrip.passengerName && activeTrip.distanceMeters
+                  ? " · "
+                  : ""}
+                {activeTrip.distanceMeters
+                  ? `Trip ${fmtKm(activeTrip.distanceMeters)}`
+                  : ""}
+              </div>
+            )}
             <div
               style={{
                 display: "flex",
@@ -749,7 +1099,7 @@ export default function DriverView() {
                 )}
               </h3>
               <span style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
-                Nearest first · every 4s
+                Tap a ride to see it on the map
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -780,9 +1130,11 @@ export default function DriverView() {
                   key={req._id}
                   req={req}
                   onAccept={handleAccept}
+                  onSelect={setSelectedId}
                   accepting={accepting}
                   distance={dist}
                   isNearest={i === 0 && sortedPending.length > 1}
+                  selected={focusReq?._id === req._id}
                 />
               ))}
             </div>

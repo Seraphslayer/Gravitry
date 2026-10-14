@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Marker, Popup, Polyline, useMap } from "react-leaflet";
 import L from "leaflet";
 
 // ── Design Tokens ──────────────────────────────────────────────────────────
@@ -66,6 +67,181 @@ export const DISCOUNTS = {
 export const DISCOUNT_KEYS = Object.keys(DISCOUNTS);
 export const discountLabel = (type) => DISCOUNTS[type]?.label || null;
 export const discountedFare = (regular) => Math.round(regular * 0.8);
+
+// ── Tariff (display only) ──────────────────────────────────────────────────
+// The real fare is worked out on the server from the road distance between the
+// exact pickup and drop-off points (api/_fare.js). This copy only feeds the
+// tariff table shown to admins - keep the two in sync.
+export const TARIFF = {
+  rows: [
+    {
+      label: "First kilometer (up to 1 km)",
+      regular: 15,
+      special: 45,
+      discounted: 12,
+      discountedSpecial: 36,
+    },
+    {
+      label: "Succeeding 2 to 5 km (over 1 km, up to 5 km)",
+      regular: 20,
+      special: 60,
+      discounted: 16,
+      discountedSpecial: 48,
+    },
+  ],
+  beyond: "Beyond 5 km: +₱5 for every additional 5 km (regular fare)",
+};
+
+// ── Places: exact points picked on the map ─────────────────────────────────
+// A "place" is { lat, lng, label } - a searched address, a dropped pin, the
+// phone's GPS position, or a terminal. Fares use the exact point, never the
+// nearest terminal.
+export const shortAddress = (name) =>
+  name
+    ? name
+        .split(",")
+        .slice(0, 3)
+        .map((s) => s.trim())
+        .join(", ")
+    : "";
+
+export const coordLabel = (lat, lng) =>
+  `Pinned location (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+
+export const terminalPlace = (t) => ({
+  lat: t.lat,
+  lng: t.lng,
+  label: t.name,
+});
+
+// Turns map coordinates into a readable address (OpenStreetMap Nominatim).
+// Returns null if it can't, so callers fall back to coordLabel().
+export async function reverseGeocode(lat, lng) {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&zoom=18&lat=${lat}&lon=${lng}`,
+      { headers: { "Accept-Language": "en" } },
+    );
+    const data = await res.json();
+    return data?.display_name ? shortAddress(data.display_name) : null;
+  } catch {
+    return null;
+  }
+}
+
+// What to show for a ride's pickup / drop-off. New rides carry the exact
+// address the passenger picked; older ones only have a terminal.
+export const pickupLabel = (r) =>
+  r?.pickup?.label || getTerm(r?.origin)?.name || r?.origin || "";
+export const dropoffLabel = (r) =>
+  r?.dropoff?.label || getTerm(r?.destination)?.name || r?.destination || "";
+
+// The exact map point of a ride's pickup / drop-off ({ lat, lng, ... }). New
+// rides carry the exact point the passenger picked; older ones only have a
+// terminal, so fall back to that terminal's coordinates.
+export const pickupPoint = (r) => r?.pickup || getTerm(r?.origin) || null;
+export const dropoffPoint = (r) =>
+  r?.dropoff || getTerm(r?.destination) || null;
+
+// Road route between two { lat, lng } points, straight from the free OSRM
+// routing service. Used by the Driver app to draw "you -> passenger" on the
+// map. Never throws: if the service is slow or down it returns a straight
+// line instead (estimated: true).
+export async function fetchRoute(a, b) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(
+      `https://router.project-osrm.org/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=simplified&geometries=geojson`,
+      { signal: ctrl.signal },
+    );
+    const data = await res.json();
+    const r = data?.routes?.[0];
+    if (data?.code === "Ok" && r) {
+      return {
+        coords: r.geometry.coordinates,
+        meters: Math.round(r.distance),
+        estimated: false,
+      };
+    }
+  } catch {
+    /* fall through to the straight line */
+  } finally {
+    clearTimeout(timer);
+  }
+  return {
+    coords: [
+      [a.lng, a.lat],
+      [b.lng, b.lat],
+    ],
+    meters: null,
+    estimated: true,
+  };
+}
+
+export const fmtKm = (meters) => {
+  if (meters == null || !Number.isFinite(meters)) return "";
+  if (meters < 1000) return `${Math.max(10, Math.round(meters / 10) * 10)} m`;
+  return `${(meters / 1000).toFixed(1)} km`;
+};
+
+// Teardrop map pin
+export function pinIcon(color, pulse = false) {
+  return L.divIcon({
+    className: "",
+    html: `
+      <div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center;">
+        ${pulse ? `<div class="gv-marker-pulse" style="width:34px;height:34px;top:0;left:0;"></div>` : ""}
+        <div style="position:relative;width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};
+          transform:rotate(-45deg);box-shadow:0 3px 8px rgba(0,0,0,0.35);border:2px solid #fff;"></div>
+      </div>`,
+    iconSize: [34, 34],
+    iconAnchor: [17, 30],
+    popupAnchor: [0, -28],
+  });
+}
+const pickupIcon = pinIcon(C.green, true);
+const dropoffIcon = pinIcon(C.yellow, true);
+
+// Draws the trip on a react-leaflet map: green pin at the exact pickup point,
+// yellow pin at the exact drop-off point, the road route between them, and
+// zooms so both fit. `route` is GeoJSON [lng, lat] pairs from /api/quote.
+export function RouteLayer({ pickup, dropoff, route }) {
+  const map = useMap();
+  useEffect(() => {
+    if (pickup && dropoff) {
+      map.fitBounds(
+        [
+          [pickup.lat, pickup.lng],
+          [dropoff.lat, dropoff.lng],
+        ],
+        { padding: [50, 50], maxZoom: 17 },
+      );
+    } else if (pickup) {
+      map.flyTo([pickup.lat, pickup.lng], 17, { duration: 0.6 });
+    }
+  }, [pickup, dropoff, map]);
+  return (
+    <>
+      {route && route.length > 1 && (
+        <Polyline
+          positions={route.map(([lng, lat]) => [lat, lng])}
+          pathOptions={{ color: C.navy, weight: 5, opacity: 0.8 }}
+        />
+      )}
+      {pickup && (
+        <Marker position={[pickup.lat, pickup.lng]} icon={pickupIcon}>
+          <Popup>Pickup: {pickup.label}</Popup>
+        </Marker>
+      )}
+      {dropoff && (
+        <Marker position={[dropoff.lat, dropoff.lng]} icon={dropoffIcon}>
+          <Popup>Drop-off: {dropoff.label}</Popup>
+        </Marker>
+      )}
+    </>
+  );
+}
 
 // ── Distance / nearest-terminal snapping (used by kiosk/passenger search + pin drop) ──
 function haversine(lat1, lng1, lat2, lng2) {
