@@ -28,9 +28,21 @@ function expiredDocsOf(driver) {
   return out;
 }
 
+// Is the driver's Driver app switched to Online and still reporting in?
+// (Same rule as api/drivers.js: a heartbeat within the last 45 seconds.)
+function driverAppActive(driver) {
+  const lastSeen = driver.appLastSeen
+    ? new Date(driver.appLastSeen).getTime()
+    : 0;
+  return driver.appOnline === true && Date.now() - lastSeen < 45 * 1000;
+}
+
 // Kiosk rides must be accepted by an NFC card tap. Only one may be pending per
 // kiosk at a time; stale ones expire so the kiosk can never get stuck.
 const KIOSK_PENDING_TTL_MIN = 10;
+// There is only one kiosk, so passengers queue up: several kiosk rides may wait
+// for a driver at once. Each NFC tap accepts the oldest one first.
+const KIOSK_MAX_WAITING = 5;
 
 async function nextId(db, name, prefix) {
   const result = await db
@@ -157,15 +169,14 @@ export default async function handler(req, res) {
             },
           },
         );
-        const busy = await col.findOne({
+        const waiting = await col.countDocuments({
           status: "pending",
           source: "kiosk",
           origin: o,
         });
-        if (busy) {
+        if (waiting >= KIOSK_MAX_WAITING) {
           return res.status(409).json({
-            error:
-              "A ride is already waiting at this kiosk. A driver must tap their card to accept it first.",
+            error: `The kiosk queue is full (${KIOSK_MAX_WAITING} rides waiting for a driver). Please try again in a moment.`,
           });
         }
       }
@@ -325,16 +336,35 @@ export default async function handler(req, res) {
 
       const nowIso = new Date().toISOString();
 
-      const update = {
-        status: "completed",
-        driver: driver.name,
-        driverId: driver._id,
-        unit: driver.unit,
-        plate: driver.plate || "N/A",
-        acceptedAt: nowIso,
-        completedAt: nowIso,
-        recordedViaNfc: true,
-      };
+      // A passenger-app ride whose driver has the Driver app online stays
+      // "dispatched": the passenger can then watch the driver come and the
+      // driver finishes the trip in the app. Everything else (kiosk rides,
+      // drivers without the app) is recorded as completed on the spot.
+      const trackable =
+        pendingReq.source !== "kiosk" &&
+        !!pendingReq.passengerId &&
+        driverAppActive(driver);
+
+      const update = trackable
+        ? {
+            status: "dispatched",
+            driver: driver.name,
+            driverId: driver._id,
+            unit: driver.unit,
+            plate: driver.plate || "N/A",
+            acceptedAt: nowIso,
+            acceptedViaNfc: true,
+          }
+        : {
+            status: "completed",
+            driver: driver.name,
+            driverId: driver._id,
+            unit: driver.unit,
+            plate: driver.plate || "N/A",
+            acceptedAt: nowIso,
+            completedAt: nowIso,
+            recordedViaNfc: true,
+          };
       // Kiosk discount claim: the driver's tap confirms they checked the ID.
       // (App rides already carry a staff-verified discount from creation.)
       if (pendingReq.discountClaim) {
@@ -354,6 +384,20 @@ export default async function handler(req, res) {
         return res
           .status(409)
           .json({ error: "That request was just taken. Try again." });
+
+      if (trackable) {
+        // Trip in progress: same bookkeeping as accepting in the Driver app.
+        await db
+          .collection("drivers")
+          .updateOne({ _id: driver._id }, { $set: { status: "on_trip" } });
+        await db
+          .collection("tricycles")
+          .updateOne(
+            { driverId: driver._id },
+            { $set: { status: "on_trip", terminal: null } },
+          );
+        return res.status(200).json(doc);
+      }
 
       // Trip is already on record: the driver stays available and their
       // tricycle is now listed at the drop-off terminal.

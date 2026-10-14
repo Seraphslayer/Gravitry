@@ -182,9 +182,15 @@ export default function KioskView() {
   const regularFare = quote?.regularFare ?? 0;
   const fare = discountClaim ? discountedFare(regularFare) : regularFare;
 
-  // A kiosk ride is already waiting for a driver's card tap, so no new one
-  // may be created until it is accepted (the server enforces this too).
-  const kioskBusy = pendingQueue.some((r) => r.source === "kiosk");
+  // Passengers queue at the single kiosk: several rides may wait for a driver's
+  // card tap (the server enforces the same limit). Each tap takes the oldest.
+  const KIOSK_QUEUE_MAX = 5;
+  const kioskWaiting = pendingQueue.filter((r) => r.source === "kiosk");
+  const kioskBusy = kioskWaiting.length >= KIOSK_QUEUE_MAX; // queue full
+  const myPosition =
+    myRequestId != null
+      ? kioskWaiting.findIndex((r) => r._id === myRequestId) + 1
+      : 0;
 
   // Poll the pending queue for this terminal, so drivers standing at the
   // kiosk (or anyone checking) can see who's waiting - independent of
@@ -324,7 +330,11 @@ export default function KioskView() {
       const doc = await acceptViaNfc(nfcId, KIOSK);
       setNfcNotice({
         type: "success",
-        text: `${doc.driver} · ride to ${dropoffLabel(doc)} recorded${
+        text: `${doc.driver} · ${doc.unit || ""} ${doc.plate || ""} · ride to ${dropoffLabel(doc)} ${
+          doc.status === "dispatched"
+            ? "accepted - open your Driver app to go to the passenger"
+            : "recorded"
+        }${
           doc.discountApplied
             ? ` · ${discountLabel(doc.discountType)} discount applied`
             : ""
@@ -451,7 +461,7 @@ export default function KioskView() {
         setQuoteTry((n) => n + 1);
       } else {
         setError(
-          /already waiting/i.test(msg)
+          /queue is full|already waiting/i.test(msg)
             ? msg
             : "Couldn't send your request. Please try again.",
         );
@@ -826,12 +836,12 @@ export default function KioskView() {
                 <Shield size={20} color={C.green} />
               </div>
             </div>
-            {kioskBusy && (
+            {kioskWaiting.length > 0 && (
               <div
                 style={{
                   marginTop: 14,
-                  background: "#FEF3C7",
-                  color: "#92400E",
+                  background: kioskBusy ? "#FEE2E2" : "#FEF3C7",
+                  color: kioskBusy ? "#991B1B" : "#92400E",
                   borderRadius: 12,
                   padding: "10px 14px",
                   fontFamily: IN,
@@ -839,8 +849,9 @@ export default function KioskView() {
                   lineHeight: 1.45,
                 }}
               >
-                A passenger is already waiting. A driver must tap their card to
-                accept that ride before a new one can be requested.
+                {kioskBusy
+                  ? `The queue is full (${KIOSK_QUEUE_MAX} rides waiting for a driver). Please try again in a moment.`
+                  : `${kioskWaiting.length} passenger${kioskWaiting.length === 1 ? " is" : "s are"} already waiting for a driver. You can still request a ride: drivers accept in order.`}
               </div>
             )}
             <button
@@ -1644,6 +1655,49 @@ export default function KioskView() {
                   ₱{fare}.00
                 </span>
               </div>
+            </div>
+            {myPosition > 0 && (
+              <div
+                style={{
+                  marginTop: 12,
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: 13,
+                  color: C.navy,
+                }}
+              >
+                {myPosition === 1
+                  ? "You are next in line"
+                  : `You are #${myPosition} in line`}
+              </div>
+            )}
+            <button
+              onClick={reset}
+              style={{
+                marginTop: 14,
+                background: C.navy,
+                color: "#fff",
+                border: "none",
+                borderRadius: 12,
+                padding: "11px 18px",
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              Done - next passenger
+            </button>
+            <div
+              style={{
+                fontFamily: IN,
+                fontSize: 11.5,
+                color: C.muted,
+                marginTop: 6,
+              }}
+            >
+              Your ride stays in the queue. The driver's name and plate flash on
+              this screen when they tap their card. Note them down.
             </div>
             <button
               onClick={cancelWaiting}
