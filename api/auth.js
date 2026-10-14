@@ -22,6 +22,21 @@ async function nextId(db, name, prefix) {
   return `${prefix}-${String(seq).padStart(3, "0")}`;
 }
 
+// Password rules for new accounts: at least 8 characters, with at least one
+// lowercase letter, one uppercase letter, and one special character
+// (anything that is not a letter, a digit, or whitespace).
+// Keep in sync with passwordError() in src/SignupFlow.jsx.
+function passwordError(password) {
+  if (password.length < 8) return "Password must be at least 8 characters";
+  if (!/[a-z]/.test(password))
+    return "Password must include at least one lowercase letter";
+  if (!/[A-Z]/.test(password))
+    return "Password must include at least one uppercase letter";
+  if (!/[^A-Za-z0-9\s]/.test(password))
+    return "Password must include at least one special character (e.g. ! @ # $ %)";
+  return null;
+}
+
 // Fare discounts a passenger can apply for. The claim is only a request: the
 // discount applies once TODA staff look at the ID photo and approve it.
 const DISCOUNT_TYPES = ["student", "senior", "pwd"];
@@ -102,11 +117,9 @@ export default async function handler(req, res) {
         !isNonEmptyString(name) ||
         !isNonEmptyString(address)
       ) {
-        return res
-          .status(400)
-          .json({
-            error: "username, password, name, and address are required",
-          });
+        return res.status(400).json({
+          error: "username, password, name, and address are required",
+        });
       }
       if (
         username.length > 40 ||
@@ -119,10 +132,9 @@ export default async function handler(req, res) {
       if (phone != null && typeof phone !== "string") {
         return res.status(400).json({ error: "Invalid phone value" });
       }
-      if (password.length < 8) {
-        return res
-          .status(400)
-          .json({ error: "Password must be at least 8 characters" });
+      const pwError = passwordError(password);
+      if (pwError) {
+        return res.status(400).json({ error: pwError });
       }
       if (consent !== true) {
         return res
@@ -146,11 +158,9 @@ export default async function handler(req, res) {
       // Each signup stores two or three photos, so cap how fast accounts can
       // be created (protects the database from being filled by a script).
       if (!(await withinRate(db, "signup", 15, 10 * 60 * 1000))) {
-        return res
-          .status(429)
-          .json({
-            error: "Too many signups right now. Try again in a few minutes.",
-          });
+        return res.status(429).json({
+          error: "Too many signups right now. Try again in a few minutes.",
+        });
       }
       const existing = await db
         .collection("passengers")
@@ -229,11 +239,9 @@ export default async function handler(req, res) {
           .json({ error: "A government ID photo and a selfie are required" });
       }
       if (!(await withinRate(db, "resubmit", 30, 10 * 60 * 1000))) {
-        return res
-          .status(429)
-          .json({
-            error: "Too many submissions right now. Try again shortly.",
-          });
+        return res.status(429).json({
+          error: "Too many submissions right now. Try again shortly.",
+        });
       }
       const p = await db
         .collection("passengers")
@@ -378,19 +386,17 @@ export default async function handler(req, res) {
       if (!session) return res.status(401).json({ error: "Not logged in" });
       let passengerInfo = {};
       if (session.role === "passenger") {
-        const p = await db
-          .collection("passengers")
-          .findOne(
-            { _id: session.passengerId },
-            {
-              projection: {
-                status: 1,
-                rejectionReason: 1,
-                discountClaim: 1,
-                discountType: 1,
-              },
+        const p = await db.collection("passengers").findOne(
+          { _id: session.passengerId },
+          {
+            projection: {
+              status: 1,
+              rejectionReason: 1,
+              discountClaim: 1,
+              discountType: 1,
             },
-          );
+          },
+        );
         if (!p) {
           clearSessionCookie(res);
           return res.status(401).json({ error: "Account not found" });

@@ -5,6 +5,21 @@ import { useAuth } from "./AuthContext.jsx";
 import { resubmitVerification } from "./api.js";
 import CameraCapture from "./CameraCapture.jsx";
 
+// Password rules for new accounts: at least 8 characters, with at least one
+// lowercase letter, one uppercase letter, and one special character
+// (anything that is not a letter, a digit, or whitespace).
+// Keep in sync with passwordError() in api/auth.js.
+function passwordError(password) {
+  if (password.length < 8) return "Password must be at least 8 characters.";
+  if (!/[a-z]/.test(password))
+    return "Password must include at least one lowercase letter.";
+  if (!/[A-Z]/.test(password))
+    return "Password must include at least one uppercase letter.";
+  if (!/[^A-Za-z0-9\s]/.test(password))
+    return "Password must include at least one special character (e.g. ! @ # $ %).";
+  return null;
+}
+
 function Field({ label, ...props }) {
   return (
     <label style={{ display: "block", marginBottom: 12 }}>
@@ -85,7 +100,8 @@ export default function SignupFlow({ resubmit = false, onClose }) {
       if (!address.trim())
         return "Please enter your home address in Mary Cris Complex.";
       if (!username.trim()) return "Please choose a username.";
-      if (password.length < 8) return "Password must be at least 8 characters.";
+      const pwError = passwordError(password);
+      if (pwError) return pwError;
       if (password !== confirm) return "Passwords don't match.";
     }
     if (step === "id" && !idPhoto)
@@ -374,7 +390,7 @@ export default function SignupFlow({ resubmit = false, onClose }) {
               autoComplete="username"
             />
             <Field
-              label="Password (at least 8 characters)"
+              label="Password (8+ characters with uppercase, lowercase & a special character)"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
