@@ -55,6 +55,16 @@ export const updateFare = (origin, destination, fare) =>
 
 // -- Drivers ----------------------------------------------------------------
 export const getDrivers = () => req("drivers");
+// Admin: create one driver account. Blank password -> one is generated and
+// returned (once). -> { id, name, username, password, generated }
+export const createDriver = (data) =>
+  req("drivers?action=create", { method: "POST", body: JSON.stringify(data) });
+// Admin: create many from spreadsheet rows. -> { created, failed, results }
+export const importDrivers = (rows) =>
+  req("drivers?action=import", {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  });
 export const updateDriver = (id, patch) =>
   req(`drivers?id=${encodeURIComponent(id)}`, {
     method: "PATCH",

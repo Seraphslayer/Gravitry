@@ -1,5 +1,7 @@
 import { getDb } from "./_db.js";
 import { requireSession } from "./_authz.js";
+import { hashPassword } from "./_auth.js";
+import { randomInt } from "node:crypto";
 
 // Fields nobody but the login system should ever see or be able to overwrite
 // through this endpoint. The presence fields are only ever written by the
@@ -25,6 +27,138 @@ function withPresence(doc) {
   const appActive =
     doc.appOnline === true && Date.now() - lastSeen < PRESENCE_TIMEOUT_MS;
   return { ...doc, appActive };
+}
+
+// ---------------------------------------------------------------------------
+// Admin: create driver accounts (one at a time, or many from an Excel sheet).
+// ---------------------------------------------------------------------------
+const MAX_IMPORT_ROWS = 50;
+const DEFAULT_TERMINAL = "T1";
+
+// Same rules as passenger passwords (see passwordError in api/auth.js).
+function passwordError(password) {
+  if (password.length < 8) return "Password must be at least 8 characters";
+  if (!/[a-z]/.test(password)) return "Password needs a lowercase letter";
+  if (!/[A-Z]/.test(password)) return "Password needs an uppercase letter";
+  if (!/[^A-Za-z0-9\s]/.test(password))
+    return "Password needs a special character (e.g. ! @ # $ %)";
+  return null;
+}
+
+// Random password that satisfies the rules above. Shown to the admin once.
+function generatePassword() {
+  const pick = (chars) => chars[randomInt(chars.length)];
+  const lower = "abcdefghjkmnpqrstuvwxyz";
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digit = "23456789";
+  const special = "!@#$%";
+  const all = lower + upper + digit;
+  const chars = [pick(lower), pick(upper), pick(digit), pick(special)];
+  while (chars.length < 10) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+const clean = (v, max = 80) =>
+  v == null ? "" : String(v).trim().slice(0, max);
+
+async function usernameTaken(db, username) {
+  for (const name of ["users", "drivers", "passengers"]) {
+    if (await db.collection(name).findOne({ username })) return true;
+  }
+  return false;
+}
+
+// Validates one row and inserts the driver (and their own tricycle record when
+// a unit number is given). Returns { ok:true, id, username, password } or
+// { ok:false, error }. Never throws for bad input.
+async function createDriver(db, input) {
+  const name = clean(input.name, 80);
+  const username = clean(input.username, 40);
+  if (!name) return { ok: false, error: "Name is required" };
+  if (!username) return { ok: false, error: "Username is required" };
+  if (!/^[A-Za-z0-9._-]{3,40}$/.test(username))
+    return {
+      ok: false,
+      error: "Username must be 3-40 letters, numbers, . _ -",
+    };
+
+  let password = clean(input.password, 100);
+  const generated = !password;
+  if (generated) password = generatePassword();
+  else {
+    const pe = passwordError(password);
+    if (pe) return { ok: false, error: pe };
+  }
+
+  const unit = clean(input.unit, 20).toUpperCase();
+  const plate = clean(input.plate, 20).toUpperCase();
+  if (unit && !plate)
+    return {
+      ok: false,
+      error: "Plate number is required when a unit is given",
+    };
+
+  const nfcId = clean(input.nfcId, 40);
+  const status = (v) =>
+    String(v).toLowerCase() === "expired" ? "expired" : "valid";
+
+  if (await usernameTaken(db, username))
+    return { ok: false, error: `Username "${username}" is already taken` };
+  if (nfcId && (await db.collection("drivers").findOne({ nfcId })))
+    return { ok: false, error: "That NFC card is already assigned" };
+  if (unit && (await db.collection("tricycles").findOne({ _id: unit })))
+    return { ok: false, error: `Unit ${unit} is already registered` };
+
+  // Next free id D<number>.
+  const existing = await db
+    .collection("drivers")
+    .find({}, { projection: { _id: 1 } })
+    .toArray();
+  const max = existing.reduce((m, d) => {
+    const n = /^D(\d+)$/.exec(d._id);
+    return n ? Math.max(m, Number(n[1])) : m;
+  }, 0);
+  const id = `D${max + 1}`;
+
+  const doc = {
+    _id: id,
+    name,
+    license: clean(input.license, 30),
+    contact: clean(input.contact, 30),
+    unit: unit || null,
+    plate: plate || null,
+    status: "off_duty",
+    rating: 5,
+    tripsCompleted: 0,
+    licenseStatus: status(input.licenseStatus),
+    franchiseStatus: status(input.franchiseStatus),
+    username,
+    passwordHash: hashPassword(password),
+  };
+  if (nfcId) doc.nfcId = nfcId;
+
+  try {
+    await db.collection("drivers").insertOne(doc);
+  } catch (e) {
+    if (e?.code === 11000)
+      return { ok: false, error: "Duplicate driver, please try again" };
+    throw e;
+  }
+  if (unit) {
+    await db.collection("tricycles").insertOne({
+      _id: unit,
+      plate,
+      driverId: id,
+      driver: name,
+      status: "off_duty",
+      terminal: DEFAULT_TERMINAL,
+    });
+  }
+  return { ok: true, id, name, username, password, generated };
 }
 
 export default async function handler(req, res) {
@@ -65,6 +199,44 @@ export default async function handler(req, res) {
       }
       await col.updateOne({ _id: session.driverId }, update);
       return res.status(200).json({ online });
+    }
+
+    // POST /api/drivers?action=create  { name, username, password?, license?,
+    //   contact?, unit?, plate?, nfcId?, licenseStatus?, franchiseStatus? }
+    // POST /api/drivers?action=import  { rows: [ same fields... ] }
+    // Admin only. A blank password is replaced with a generated one, returned
+    // once so the admin can hand it to the driver.
+    if (req.method === "POST" && (action === "create" || action === "import")) {
+      const session = requireSession(req, res, ["admin"]);
+      if (!session) return;
+
+      if (action === "create") {
+        const r = await createDriver(db, req.body || {});
+        if (!r.ok) return res.status(400).json({ error: r.error });
+        return res.status(201).json(r);
+      }
+
+      const rows = req.body?.rows;
+      if (!Array.isArray(rows) || rows.length === 0)
+        return res.status(400).json({ error: "No rows to import" });
+      if (rows.length > MAX_IMPORT_ROWS)
+        return res
+          .status(400)
+          .json({ error: `At most ${MAX_IMPORT_ROWS} drivers per file` });
+      const results = [];
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const r =
+          row && typeof row === "object"
+            ? await createDriver(db, row)
+            : { ok: false, error: "Invalid row" };
+        results.push({ row: i + 1, ...r });
+      }
+      return res.status(200).json({
+        created: results.filter((r) => r.ok).length,
+        failed: results.filter((r) => !r.ok).length,
+        results,
+      });
     }
 
     if (req.method === "GET") {

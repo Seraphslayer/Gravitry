@@ -20,6 +20,8 @@ import {
 import {
   getDrivers,
   updateDriver,
+  createDriver,
+  importDrivers,
   getTricycles,
   createTricycle,
   rentTricycle,
@@ -230,7 +232,637 @@ function NfcCell({ driver, onSaved }) {
   );
 }
 
+// ── Add drivers: one by one, or from an Excel sheet ─────────────────────────
+const IMPORT_MAX = 50;
+// Spreadsheet column titles (any case / spacing) -> driver fields.
+const COLUMN_ALIASES = {
+  name: "name",
+  fullname: "name",
+  drivername: "name",
+  username: "username",
+  password: "password",
+  license: "license",
+  licenseno: "license",
+  licensenumber: "license",
+  contact: "contact",
+  contactno: "contact",
+  phone: "contact",
+  mobile: "contact",
+  unit: "unit",
+  unitno: "unit",
+  plate: "plate",
+  plateno: "plate",
+  nfc: "nfcId",
+  nfcid: "nfcId",
+  nfccard: "nfcId",
+  licensestatus: "licenseStatus",
+  franchisestatus: "franchiseStatus",
+};
+const TEMPLATE_HEADERS = [
+  "Name",
+  "Username",
+  "Password",
+  "License No",
+  "Contact",
+  "Unit",
+  "Plate",
+  "NFC Card",
+  "License Status",
+  "Franchise Status",
+];
+
+// 2-D array of cells (first row = titles) -> array of driver objects.
+function rowsToDrivers(sheet) {
+  if (!sheet || sheet.length < 2) return [];
+  const fields = sheet[0].map(
+    (h) =>
+      COLUMN_ALIASES[
+        String(h ?? "")
+          .toLowerCase()
+          .replace(/[^a-z]/g, "")
+      ],
+  );
+  return sheet
+    .slice(1)
+    .filter((r) => r.some((c) => c !== null && c !== undefined && c !== ""))
+    .map((r) => {
+      const o = {};
+      fields.forEach((f, i) => {
+        if (f && r[i] !== null && r[i] !== undefined)
+          o[f] = String(r[i]).trim();
+      });
+      return o;
+    });
+}
+
+// Minimal CSV parser (quotes supported) so a CSV saved from Excel also works.
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (ch === '"') q = false;
+      else cell += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else cell += ch;
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows;
+}
+
+function downloadCsv(filename, rows) {
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const csv = rows.map((r) => r.map(esc).join(",")).join("\r\n");
+  const url = URL.createObjectURL(
+    new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }),
+  );
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const cleanErr = (e) =>
+  String(e?.message || e).replace(/^API [^:]*failed: /, "");
+
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: C.white,
+          borderRadius: 12,
+          width: "100%",
+          maxWidth: wide ? 760 : 460,
+          maxHeight: "90vh",
+          overflow: "auto",
+          padding: 20,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: 14,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 15,
+              color: C.text,
+            }}
+          >
+            {title}
+          </span>
+          <button
+            onClick={onClose}
+            style={{ ...smallBtn("transparent", C.muted), padding: 4 }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const EMPTY_DRIVER = {
+  name: "",
+  username: "",
+  password: "",
+  license: "",
+  contact: "",
+  unit: "",
+  plate: "",
+  nfcId: "",
+  licenseStatus: "valid",
+  franchiseStatus: "valid",
+};
+
+function AddDriverModal({ onClose, onDone }) {
+  const [f, setF] = useState(EMPTY_DRIVER);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [created, setCreated] = useState(null);
+  const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
+
+  const save = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      setCreated(await createDriver(f));
+      onDone();
+    } catch (e) {
+      setErr(cleanErr(e));
+    }
+    setBusy(false);
+  };
+
+  const input = (k, label, extra = {}) => (
+    <label
+      style={{ display: "block", fontFamily: IN, fontSize: 11, color: C.muted }}
+    >
+      {label}
+      <input
+        value={f[k]}
+        onChange={set(k)}
+        style={{
+          ...fieldStyle,
+          width: "100%",
+          boxSizing: "border-box",
+          marginTop: 3,
+        }}
+        {...extra}
+      />
+    </label>
+  );
+
+  if (created) {
+    return (
+      <Modal title="Driver created" onClose={onClose}>
+        <div
+          style={{
+            fontFamily: IN,
+            fontSize: 13,
+            color: C.text,
+            lineHeight: 1.7,
+          }}
+        >
+          <b>{created.name}</b> ({created.id})
+          <br />
+          Username: <b>{created.username}</b>
+          <br />
+          Password: <b>{created.password}</b>
+        </div>
+        <div
+          style={{
+            fontFamily: IN,
+            fontSize: 11.5,
+            color: C.muted,
+            margin: "10px 0",
+          }}
+        >
+          {created.generated
+            ? "This password was generated and will not be shown again. Give it to the driver now."
+            : "Give these login details to the driver."}
+        </div>
+        <button onClick={onClose} style={smallBtn(C.navy, "#fff")}>
+          Done
+        </button>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title="Add driver" onClose={onClose}>
+      <div style={{ display: "grid", gap: 10 }}>
+        {input("name", "Full name *")}
+        {input("username", "Username * (for the Driver app login)")}
+        {input("password", "Password (leave blank to generate one)", {
+          type: "text",
+          autoComplete: "off",
+        })}
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+        >
+          {input("license", "License no.")}
+          {input("contact", "Contact no.")}
+          {input("unit", "Unit no. (e.g. MCC-008)")}
+          {input("plate", "Plate no.")}
+        </div>
+        {input("nfcId", "NFC card ID (optional)")}
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+        >
+          {["licenseStatus", "franchiseStatus"].map((k) => (
+            <label
+              key={k}
+              style={{ fontFamily: IN, fontSize: 11, color: C.muted }}
+            >
+              {k === "licenseStatus" ? "License" : "Franchise"}
+              <select
+                value={f[k]}
+                onChange={set(k)}
+                style={{ ...fieldStyle, width: "100%", marginTop: 3 }}
+              >
+                <option value="valid">Valid</option>
+                <option value="expired">Expired</option>
+              </select>
+            </label>
+          ))}
+        </div>
+        <div style={{ fontFamily: IN, fontSize: 11, color: C.muted }}>
+          Leave Unit and Plate blank if the driver has no tricycle (you can rent
+          them a TODA unit in the Tricycles tab).
+        </div>
+        {err && (
+          <div style={{ color: "#B91C1C", fontFamily: IN, fontSize: 12 }}>
+            {err}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            disabled={busy || !f.name.trim() || !f.username.trim()}
+            onClick={save}
+            style={{
+              ...smallBtn(C.green, "#fff"),
+              opacity: busy || !f.name.trim() || !f.username.trim() ? 0.5 : 1,
+            }}
+          >
+            {busy ? "Saving..." : "Create driver"}
+          </button>
+          <button onClick={onClose} style={smallBtn(C.surface, C.muted)}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ImportDriversModal({ onClose, onDone }) {
+  const [rows, setRows] = useState(null); // parsed drivers, before sending
+  const [fileName, setFileName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [result, setResult] = useState(null);
+
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setErr("");
+    setResult(null);
+    try {
+      let sheet;
+      if (/\.csv$/i.test(file.name)) {
+        sheet = parseCsv((await file.text()).replace(/^\uFEFF/, ""));
+      } else if (/\.xlsx$/i.test(file.name)) {
+        const { readSheet } = await import("read-excel-file/browser");
+        sheet = await readSheet(file);
+      } else {
+        throw new Error("Please choose an .xlsx (Excel) or .csv file");
+      }
+      const parsed = rowsToDrivers(sheet);
+      if (!parsed.length)
+        throw new Error("No drivers found. Check the column titles in row 1.");
+      if (parsed.length > IMPORT_MAX)
+        throw new Error(
+          `At most ${IMPORT_MAX} drivers per file (found ${parsed.length}).`,
+        );
+      setFileName(file.name);
+      setRows(parsed);
+    } catch (ex) {
+      setRows(null);
+      setErr(cleanErr(ex));
+    }
+  };
+
+  const send = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      setResult(await importDrivers(rows));
+      onDone();
+    } catch (ex) {
+      setErr(cleanErr(ex));
+    }
+    setBusy(false);
+  };
+
+  const th = {
+    padding: "6px 8px",
+    textAlign: "left",
+    fontSize: 11,
+    color: C.muted,
+  };
+  const td = {
+    padding: "6px 8px",
+    fontSize: 12,
+    fontFamily: IN,
+    color: C.text,
+  };
+
+  return (
+    <Modal title="Import drivers from Excel" onClose={onClose} wide>
+      {!result && (
+        <>
+          <div
+            style={{
+              fontFamily: IN,
+              fontSize: 12,
+              color: C.muted,
+              lineHeight: 1.6,
+            }}
+          >
+            Row 1 = column titles: <b>{TEMPLATE_HEADERS.join(", ")}</b>. Only{" "}
+            <b>Name</b> and <b>Username</b> are required. A blank Password gets
+            a generated one. Statuses are <b>Valid</b> or <b>Expired</b>. Up to{" "}
+            {IMPORT_MAX} drivers per file.
+          </div>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              margin: "12px 0",
+            }}
+          >
+            <label
+              style={{ ...smallBtn(C.navy, "#fff"), display: "inline-block" }}
+            >
+              Choose .xlsx / .csv file
+              <input
+                type="file"
+                accept=".xlsx,.csv"
+                onChange={pick}
+                style={{ display: "none" }}
+              />
+            </label>
+            <button
+              onClick={() =>
+                downloadCsv("drivers-template.csv", [
+                  TEMPLATE_HEADERS,
+                  [
+                    "Juan Dela Cruz",
+                    "juan",
+                    "",
+                    "N01-23-123456",
+                    "0917 000 0000",
+                    "MCC-008",
+                    "ABL-8901",
+                    "",
+                    "Valid",
+                    "Valid",
+                  ],
+                ])
+              }
+              style={smallBtn(C.surface, C.text)}
+            >
+              Download template
+            </button>
+          </div>
+        </>
+      )}
+      {err && (
+        <div
+          style={{
+            color: "#B91C1C",
+            fontFamily: IN,
+            fontSize: 12,
+            marginBottom: 8,
+          }}
+        >
+          {err}
+        </div>
+      )}
+      {rows && !result && (
+        <>
+          <div
+            style={{
+              fontFamily: IN,
+              fontSize: 12,
+              color: C.text,
+              marginBottom: 6,
+            }}
+          >
+            {fileName}: <b>{rows.length}</b> driver
+            {rows.length === 1 ? "" : "s"} found
+          </div>
+          <div
+            style={{
+              overflow: "auto",
+              border: `1px solid ${C.border}`,
+              borderRadius: 8,
+            }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: C.surface }}>
+                  {[
+                    "#",
+                    "Name",
+                    "Username",
+                    "Unit",
+                    "Plate",
+                    "License",
+                    "Franchise",
+                  ].map((h) => (
+                    <th key={h} style={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={td}>{i + 1}</td>
+                    <td style={td}>{r.name}</td>
+                    <td style={td}>{r.username}</td>
+                    <td style={td}>{r.unit}</td>
+                    <td style={td}>{r.plate}</td>
+                    <td style={td}>{r.licenseStatus || "Valid"}</td>
+                    <td style={td}>{r.franchiseStatus || "Valid"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button
+              disabled={busy}
+              onClick={send}
+              style={{ ...smallBtn(C.green, "#fff"), opacity: busy ? 0.5 : 1 }}
+            >
+              {busy
+                ? "Creating..."
+                : `Create ${rows.length} account${rows.length === 1 ? "" : "s"}`}
+            </button>
+            <button
+              onClick={() => setRows(null)}
+              style={smallBtn(C.surface, C.muted)}
+            >
+              Clear
+            </button>
+          </div>
+        </>
+      )}
+      {result && (
+        <>
+          <div
+            style={{
+              fontFamily: IN,
+              fontSize: 13,
+              color: C.text,
+              marginBottom: 8,
+            }}
+          >
+            <b style={{ color: "#065F46" }}>{result.created} created</b>
+            {result.failed > 0 && (
+              <>
+                {" · "}
+                <b style={{ color: "#B91C1C" }}>{result.failed} failed</b>
+              </>
+            )}
+          </div>
+          <div
+            style={{
+              fontFamily: IN,
+              fontSize: 11.5,
+              color: C.muted,
+              marginBottom: 8,
+            }}
+          >
+            Passwords are shown only now. Download the list and give each driver
+            their login.
+          </div>
+          <div
+            style={{
+              overflow: "auto",
+              border: `1px solid ${C.border}`,
+              borderRadius: 8,
+            }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: C.surface }}>
+                  {["Row", "Result", "Username", "Password"].map((h) => (
+                    <th key={h} style={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {result.results.map((r) => (
+                  <tr
+                    key={r.row}
+                    style={{ borderTop: `1px solid ${C.border}` }}
+                  >
+                    <td style={td}>{r.row}</td>
+                    <td style={{ ...td, color: r.ok ? "#065F46" : "#B91C1C" }}>
+                      {r.ok ? `Created (${r.id})` : r.error}
+                    </td>
+                    <td style={td}>{r.ok ? r.username : ""}</td>
+                    <td style={td}>{r.ok ? r.password : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button
+              onClick={() =>
+                downloadCsv("new-driver-logins.csv", [
+                  [
+                    "Row",
+                    "Result",
+                    "Name",
+                    "Driver ID",
+                    "Username",
+                    "Password",
+                  ],
+                  ...result.results.map((r) => [
+                    r.row,
+                    r.ok ? "Created" : r.error,
+                    r.name || "",
+                    r.id || "",
+                    r.username || "",
+                    r.password || "",
+                  ]),
+                ])
+              }
+              style={smallBtn(C.navy, "#fff")}
+            >
+              Download logins (CSV)
+            </button>
+            <button onClick={onClose} style={smallBtn(C.surface, C.muted)}>
+              Close
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function DriversTab({ drivers, loading, onRefresh }) {
+  const [modal, setModal] = useState(null); // "add" | "import" | null
   return (
     <div
       style={{
@@ -241,7 +873,15 @@ function DriversTab({ drivers, loading, onRefresh }) {
       }}
     >
       <div
-        style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}` }}
+        style={{
+          padding: "14px 16px",
+          borderBottom: `1px solid ${C.border}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
       >
         <span
           style={{
@@ -253,7 +893,27 @@ function DriversTab({ drivers, loading, onRefresh }) {
         >
           Registered Drivers
         </span>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            onClick={() => setModal("add")}
+            style={smallBtn(C.navy, "#fff")}
+          >
+            + Add driver
+          </button>
+          <button
+            onClick={() => setModal("import")}
+            style={smallBtn(C.surface, C.text)}
+          >
+            Import from Excel
+          </button>
+        </div>
       </div>
+      {modal === "add" && (
+        <AddDriverModal onClose={() => setModal(null)} onDone={onRefresh} />
+      )}
+      {modal === "import" && (
+        <ImportDriversModal onClose={() => setModal(null)} onDone={onRefresh} />
+      )}
       <table className="responsive-table">
         <thead>
           <tr style={{ background: C.surface }}>
@@ -266,7 +926,6 @@ function DriversTab({ drivers, loading, onRefresh }) {
               "Documents",
               "NFC Card",
               "Duty",
-              "Status",
             ].map((h) => (
               <th
                 key={h}
@@ -289,7 +948,7 @@ function DriversTab({ drivers, loading, onRefresh }) {
           {loading && (
             <tr>
               <td
-                colSpan={9}
+                colSpan={8}
                 style={{
                   padding: 24,
                   textAlign: "center",
@@ -424,9 +1083,6 @@ function DriversTab({ drivers, loading, onRefresh }) {
                 </td>
                 <td data-label="Duty" style={{ padding: "12px 16px" }}>
                   <DutyBadge driver={d} />
-                </td>
-                <td data-label="Status" style={{ padding: "12px 16px" }}>
-                  {statusBadge(d.status)}
                 </td>
               </tr>
             ))}
