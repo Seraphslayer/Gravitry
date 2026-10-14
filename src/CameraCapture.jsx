@@ -255,11 +255,10 @@ export default function CameraCapture({
             }}
           >
             <Upload size={15} />
-            <span>Use phone camera</span>
+            <span>Upload from files</span>
             <input
               type="file"
               accept="image/*"
-              capture={facing === "user" ? "user" : "environment"}
               onChange={onFile}
               style={{ display: "none" }}
             />

@@ -432,6 +432,19 @@ export default async function handler(req, res) {
       const driver = await db.collection("drivers").findOne({ _id: driverId });
       if (!driver) return res.status(404).json({ error: "Driver not found" });
 
+      // Block drivers whose license or franchise has expired.
+      const today = new Date().toISOString().slice(0, 10);
+      const expiredDocs = [];
+      if (driver.licenseExpiry && driver.licenseExpiry < today)
+        expiredDocs.push("license");
+      if (driver.franchiseExpiry && driver.franchiseExpiry < today)
+        expiredDocs.push("franchise");
+      if (expiredDocs.length) {
+        return res.status(403).json({
+          error: `Your ${expiredDocs.join(" and ")} has expired. Please renew it with TODA staff before accepting rides.`,
+        });
+      }
+
       const update = {
         status: "dispatched",
         driver: driver.name,
