@@ -5,29 +5,25 @@ import jwt from "jsonwebtoken";
 // the exact pickup point and the exact drop-off point - NOT on which terminal
 // happens to be nearest.
 //
-//   up to 1 km (first kilometer) ........ PHP 15   regular, per person
-//   over 1 km, up to 5 km ............... PHP 20   ("succeeding 2 to 5 km")
-//   beyond 5 km ......................... +PHP 5 for every additional 5 km
+// The poster: first kilometer PHP 15, then "additional PHP 5.00 for every
+// succeeding 2 kilometers" (the posted PHP 20 is the first kilometer plus the
+// first PHP 5 step). So, for the regular per-person fare:
 //
-// ASSUMPTION: the poster does not say what happens beyond 5 km, so the last
-// line is a reasonable reading of "additional 5 pesos for every succeeding
-// 2 to 5 kilometers". Change BEYOND_STEP_KM / BEYOND_STEP_FARE below if the
-// TODA rules it differently. Keep TARIFF in src/shared.jsx in sync (it is only
-// used there to display the tariff table to admins).
+//     up to 1 km ......... PHP 15
+//     over 1  - 3 km ..... PHP 20
+//     over 3  - 5 km ..... PHP 25
+//     over 5  - 7 km ..... PHP 30   ... and so on, +PHP 5 every 2 km
+//
+// If the TODA charges differently, only these four numbers need to change.
 const FIRST_KM = 1;
 const FIRST_KM_FARE = 15;
-const UP_TO_KM = 5;
-const UP_TO_FARE = 20;
-const BEYOND_STEP_KM = 5;
-const BEYOND_STEP_FARE = 5;
+const STEP_KM = 2;
+const STEP_FARE = 5;
 
 export function regularFareForMeters(meters) {
   const km = meters / 1000;
   if (km <= FIRST_KM) return FIRST_KM_FARE;
-  if (km <= UP_TO_KM) return UP_TO_FARE;
-  return (
-    UP_TO_FARE + BEYOND_STEP_FARE * Math.ceil((km - UP_TO_KM) / BEYOND_STEP_KM)
-  );
+  return FIRST_KM_FARE + STEP_FARE * Math.ceil((km - FIRST_KM) / STEP_KM);
 }
 
 // Students, senior citizens and PWDs pay 80% of the regular fare
