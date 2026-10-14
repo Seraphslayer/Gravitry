@@ -9,6 +9,16 @@ import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
 // Rejected accounts can never book until they resubmit and get approved.
 const PENDING_CAN_BOOK = true;
 
+// Returns the names of a driver's expired documents (license / franchise).
+function expiredDocsOf(driver) {
+  const today = new Date().toISOString().slice(0, 10);
+  const out = [];
+  if (driver.licenseExpiry && driver.licenseExpiry < today) out.push("license");
+  if (driver.franchiseExpiry && driver.franchiseExpiry < today)
+    out.push("franchise");
+  return out;
+}
+
 // Kiosk rides must be accepted by an NFC card tap. Only one may be pending per
 // kiosk at a time; stale ones expire so the kiosk can never get stuck.
 const KIOSK_PENDING_TTL_MIN = 10;
@@ -270,6 +280,12 @@ export default async function handler(req, res) {
           .status(409)
           .json({ error: "You already have an active trip" });
       }
+      const expiredNfc = expiredDocsOf(driver);
+      if (expiredNfc.length) {
+        return res.status(403).json({
+          error: `Your ${expiredNfc.join(" and ")} has expired. Please renew it with TODA staff before accepting rides.`,
+        });
+      }
 
       // "kiosk" sorts above "app" when descending, so kiosk rides come first,
       // then oldest first within each group. Old requests with no source
@@ -433,12 +449,7 @@ export default async function handler(req, res) {
       if (!driver) return res.status(404).json({ error: "Driver not found" });
 
       // Block drivers whose license or franchise has expired.
-      const today = new Date().toISOString().slice(0, 10);
-      const expiredDocs = [];
-      if (driver.licenseExpiry && driver.licenseExpiry < today)
-        expiredDocs.push("license");
-      if (driver.franchiseExpiry && driver.franchiseExpiry < today)
-        expiredDocs.push("franchise");
+      const expiredDocs = expiredDocsOf(driver);
       if (expiredDocs.length) {
         return res.status(403).json({
           error: `Your ${expiredDocs.join(" and ")} has expired. Please renew it with TODA staff before accepting rides.`,
