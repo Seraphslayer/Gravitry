@@ -4,6 +4,7 @@ import {
   TileLayer,
   Marker,
   Popup,
+  Polyline,
   useMap,
   useMapEvents,
 } from "react-leaflet";
@@ -30,6 +31,7 @@ import {
   Maximize2,
   BadgePercent,
   Route,
+  Navigation,
 } from "lucide-react";
 import {
   C,
@@ -53,6 +55,16 @@ import {
   pickupLabel,
   dropoffLabel,
   fmtKm,
+  pickupPoint,
+  dropoffPoint,
+  toLatLngs,
+  etaMinutes,
+  remainingAhead,
+  useRoute,
+  useLiveRoute,
+  FitTo,
+  driverMarkerIcon,
+  SmoothMarkers,
 } from "./shared.jsx";
 import {
   getQuote,
@@ -60,12 +72,14 @@ import {
   cancelRequest,
   getRequestById,
   getRequests,
+  trackRequest,
 } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import SignupFlow from "./SignupFlow.jsx";
 
 const terminalIcon = pinIcon(C.navy, false);
 const pickupIcon = pinIcon(C.green, true);
+const dropoffPinIcon = pinIcon(C.yellow, true);
 const droppedPinIcon = L.divIcon({
   className: "",
   html: `<div style="width:14px;height:14px;border-radius:50%;background:#DC2626;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.4);"></div>`,
@@ -1071,6 +1085,8 @@ export default function PassengerApp() {
   const [quoteTry, setQuoteTry] = useState(0);
   const [myRequestId, setMyRequestId] = useState(null);
   const [record, setRecord] = useState(null);
+  const [trackInfo, setTrackInfo] = useState(null); // { request, driverLocation }
+  const [trail, setTrail] = useState([]); // where the driver has driven with the passenger
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -1158,7 +1174,12 @@ export default function PassengerApp() {
           setError("Your request was cancelled. Please request again.");
           return;
         }
-        if (doc.status !== "pending") {
+        if (doc.status === "dispatched") {
+          // a driver accepted in the Driver app and is on the way
+          setRecord(doc);
+          setFlowStep("tracking");
+        } else if (doc.status !== "pending") {
+          // recorded straight away by an NFC card tap
           setRecord(doc);
           setFlowStep("success");
         }
@@ -1171,6 +1192,98 @@ export default function PassengerApp() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flowStep, myRequestId]);
+
+  // Pick up where we left off if the page was reloaded mid-ride.
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (!isPassenger || resumedRef.current) return;
+    resumedRef.current = true;
+    getRequests({ passengerId: user.passengerId })
+      .then((rides) => {
+        const active = rides.find(
+          (r) => r.status === "pending" || r.status === "dispatched",
+        );
+        if (!active) return;
+        const pk = pickupPoint(active);
+        const dp = dropoffPoint(active);
+        if (!pk || !dp) return;
+        setPickup({ lat: pk.lat, lng: pk.lng, label: pickupLabel(active) });
+        setDropoff({ lat: dp.lat, lng: dp.lng, label: dropoffLabel(active) });
+        setMyRequestId(active._id);
+        setFlowStep(active.status === "pending" ? "waiting" : "tracking");
+      })
+      .catch(() => {});
+  }, [isPassenger, user?.passengerId]);
+
+  // While the driver is on the way, keep asking where they are.
+  useEffect(() => {
+    if (flowStep !== "tracking" || !myRequestId) return;
+    const tick = async () => {
+      try {
+        const info = await trackRequest(myRequestId);
+        if (info.request.status === "completed") {
+          setRecord(info.request);
+          setFlowStep("success");
+          return;
+        }
+        if (info.request.status === "cancelled") {
+          resetFlow();
+          return;
+        }
+        setTrackInfo(info);
+      } catch {
+        /* keep polling */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 3000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowStep, myRequestId]);
+
+  // The live picture of the driver coming to you (and later, the trip).
+  const tracking = flowStep === "tracking";
+  const trackReq = trackInfo?.request || record;
+  const driverFix = tracking ? trackInfo?.driverLocation || null : null;
+  const driverPoint = driverFix
+    ? { lat: driverFix.lat, lng: driverFix.lng }
+    : null;
+  const pickedUp = tracking && !!trackReq?.pickedUpAt;
+  // heading to the passenger first, then to the drop-off
+  const liveRoute = useLiveRoute(
+    driverPoint,
+    tracking ? (pickedUp ? dropoff : pickup) : null,
+  );
+  const ahead =
+    liveRoute && driverPoint
+      ? remainingAhead(liveRoute.coords, driverPoint)
+      : null;
+  const tripPreview = useRoute(
+    tracking && !pickedUp ? pickup : null,
+    tracking && !pickedUp ? dropoff : null,
+  );
+  const driverArrived = tracking && !pickedUp && !!ahead && ahead.meters < 50;
+  const nearDropoff = tracking && pickedUp && !!ahead && ahead.meters < 40;
+
+  // Trail of where the driver has driven since picking you up.
+  useEffect(() => {
+    if (!pickedUp) {
+      setTrail([]);
+      return;
+    }
+    if (!driverPoint) return;
+    setTrail((t) => {
+      const lastPt = t[t.length - 1];
+      if (
+        lastPt &&
+        Math.abs(lastPt[0] - driverPoint.lat) < 0.00008 &&
+        Math.abs(lastPt[1] - driverPoint.lng) < 0.00008
+      )
+        return t;
+      return [...t.slice(-300), [driverPoint.lat, driverPoint.lng]];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedUp, driverPoint?.lat, driverPoint?.lng]);
 
   // The terminal whose queue the ride joins: nearest to the pickup point. It
   // only decides which terminal's drivers see the ride - the fare uses the
@@ -1186,6 +1299,8 @@ export default function PassengerApp() {
     setQuote(null);
     setQuoteError(null);
     setRecord(null);
+    setTrackInfo(null);
+    setTrail([]);
     setMyRequestId(null);
     setError(null);
   };
@@ -1249,7 +1364,7 @@ export default function PassengerApp() {
   const showWelcomePanel = !loading && !isPassenger;
   const canBook = user?.status !== "rejected";
   const inLocationStep = flowStep === "pickup" || flowStep === "dropoff";
-  const showRoute = !inLocationStep && pickup && dropoff;
+  const showRoute = !inLocationStep && !tracking && pickup && dropoff;
 
   return (
     <div className="kiosk-shell">
@@ -1387,6 +1502,66 @@ export default function PassengerApp() {
               route={quote?.geometry}
             />
           )}
+          {tracking && pickup && dropoff && (
+            <>
+              <SmoothMarkers />
+              <FitTo
+                points={[driverPoint, pickedUp ? null : pickup, dropoff]}
+                fitKey={`${!!driverPoint}|${pickedUp}`}
+              />
+              {/* the whole trip, faint, while the driver is still coming */}
+              {!pickedUp && tripPreview && (
+                <Polyline
+                  positions={toLatLngs(tripPreview.coords)}
+                  pathOptions={{
+                    color: C.green,
+                    weight: 4,
+                    opacity: 0.45,
+                    dashArray: "8 8",
+                  }}
+                />
+              )}
+              {/* where the driver has driven with you */}
+              {pickedUp && trail.length > 1 && (
+                <Polyline
+                  positions={trail}
+                  pathOptions={{ color: "#9CA3AF", weight: 5, opacity: 0.9 }}
+                />
+              )}
+              {/* live line from the driver to you (then to the drop-off):
+                  shrinks as the driver gets closer */}
+              {ahead && (
+                <Polyline
+                  positions={ahead.line}
+                  pathOptions={{
+                    color: pickedUp ? C.green : C.navy,
+                    weight: 6,
+                    opacity: 0.9,
+                  }}
+                />
+              )}
+              {!pickedUp && (
+                <Marker position={[pickup.lat, pickup.lng]} icon={pickupIcon}>
+                  <Popup>Pickup: {pickup.label}</Popup>
+                </Marker>
+              )}
+              <Marker
+                position={[dropoff.lat, dropoff.lng]}
+                icon={dropoffPinIcon}
+              >
+                <Popup>Drop-off: {dropoff.label}</Popup>
+              </Marker>
+              {driverPoint && (
+                <Marker
+                  position={[driverPoint.lat, driverPoint.lng]}
+                  icon={driverMarkerIcon}
+                  zIndexOffset={1000}
+                >
+                  <Popup>Your driver</Popup>
+                </Marker>
+              )}
+            </>
+          )}
           {myPosition && (
             <Marker
               position={[myPosition.lat, myPosition.lng]}
@@ -1396,6 +1571,43 @@ export default function PassengerApp() {
             </Marker>
           )}
         </MapContainer>
+
+        {tracking && (
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(60px + var(--safe-top))",
+              left: 12,
+              zIndex: 400,
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              background:
+                driverArrived || nearDropoff
+                  ? C.green
+                  : "rgba(255,255,255,0.96)",
+              color: driverArrived || nearDropoff ? "#fff" : C.text,
+              padding: "8px 14px",
+              borderRadius: 20,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 12.5,
+            }}
+          >
+            <Navigation
+              size={14}
+              color={driverArrived || nearDropoff ? "#fff" : C.green}
+            />
+            {nearDropoff
+              ? "You've arrived"
+              : driverArrived
+                ? "Your driver has arrived"
+                : ahead
+                  ? `${fmtKm(ahead.meters)} ${pickedUp ? "to drop-off" : "away"} · ~${etaMinutes(ahead.meters)} min`
+                  : "Finding your driver…"}
+          </div>
+        )}
 
         {inLocationStep && pinState.pinMode && (
           <div
@@ -2045,6 +2257,140 @@ export default function PassengerApp() {
                   </div>
                 )}
 
+                {flowStep === "tracking" && trackReq && (
+                  <div>
+                    <div style={{ textAlign: "center", marginBottom: 14 }}>
+                      <div
+                        style={{
+                          width: 52,
+                          height: 52,
+                          borderRadius: "50%",
+                          background: C.navy,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          margin: "0 auto 10px",
+                        }}
+                      >
+                        <Navigation size={24} color={C.yellow} />
+                      </div>
+                      <h2
+                        style={{
+                          fontFamily: GR,
+                          fontWeight: 700,
+                          fontSize: "clamp(16px,4.5vw,19px)",
+                          color: C.text,
+                          margin: "0 0 2px",
+                        }}
+                      >
+                        {nearDropoff
+                          ? "You've arrived!"
+                          : pickedUp
+                            ? "On your way"
+                            : driverArrived
+                              ? "Your driver has arrived"
+                              : "Your driver is on the way"}
+                      </h2>
+                      <p
+                        style={{
+                          fontFamily: IN,
+                          fontSize: 12.5,
+                          color: C.muted,
+                          margin: 0,
+                        }}
+                      >
+                        {ahead
+                          ? `${fmtKm(ahead.meters)} ${pickedUp ? "to your drop-off" : "away"} · about ${etaMinutes(ahead.meters)} min`
+                          : driverFix === null && !driverPoint
+                            ? "Waiting for the driver's location…"
+                            : ""}
+                      </p>
+                    </div>
+                    <div
+                      style={{
+                        background: C.surface,
+                        borderRadius: 14,
+                        padding: 16,
+                        border: `1px solid ${C.border}`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 12,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: GR,
+                            fontWeight: 700,
+                            fontSize: 12,
+                            color: C.navy,
+                          }}
+                        >
+                          Your Driver · check before boarding
+                        </span>
+                        <Shield size={16} color={C.green} />
+                      </div>
+                      <SlipRow
+                        icon={<User size={13} />}
+                        label="Driver"
+                        value={trackReq.driver}
+                      />
+                      <SlipRow
+                        icon={<Truck size={13} />}
+                        label="Unit No."
+                        value={trackReq.unit}
+                        mono
+                      />
+                      <SlipRow
+                        icon={<Hash size={13} />}
+                        label="Plate No."
+                        value={trackReq.plate}
+                        mono
+                      />
+                      <SlipRow
+                        icon={<MapPin size={13} />}
+                        label="Drop-off"
+                        value={dropoffLabel(trackReq)}
+                      />
+                      <SlipRow
+                        icon={<span style={{ fontSize: 12 }}>₱</span>}
+                        label="Fare"
+                        value={`₱${trackReq.fare}.00`}
+                        accent
+                      />
+                      <div
+                        style={{
+                          marginTop: 10,
+                          paddingTop: 10,
+                          borderTop: `1px dashed ${C.border}`,
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: 11,
+                          color: C.muted,
+                          fontFamily: IN,
+                        }}
+                      >
+                        <span>
+                          {trackReq._id} · {fmtTime(trackReq.ts)}
+                        </span>
+                        <span
+                          style={{
+                            fontWeight: 700,
+                            color: C.green,
+                            fontFamily: GR,
+                          }}
+                        >
+                          VERIFIED ✓
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {flowStep === "success" && record && (
                   <div>
                     <div style={{ textAlign: "center", marginBottom: 14 }}>
@@ -2071,7 +2417,9 @@ export default function PassengerApp() {
                           margin: "0 0 2px",
                         }}
                       >
-                        Tricycle Dispatched!
+                        {record.recordedViaNfc
+                          ? "Tricycle Dispatched!"
+                          : "Trip Completed!"}
                       </h2>
                       <p
                         style={{

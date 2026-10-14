@@ -358,6 +358,58 @@ export default async function handler(req, res) {
       return res.status(200).json(doc);
     }
 
+    // GET /api/requests?id=DR-001&action=track
+    // Lets the passenger who booked a ride watch their driver approach: the
+    // request plus the driver's live position, only while the ride is
+    // "dispatched" and only if the position is fresh. Owner (or admin) only.
+    if (req.method === "GET" && id && action === "track") {
+      const session = requireSession(req, res, ["passenger", "admin"]);
+      if (!session) return;
+      const doc = await col.findOne({ _id: id });
+      if (!doc) return res.status(404).json({ error: "Request not found" });
+      if (
+        session.role === "passenger" &&
+        doc.passengerId !== session.passengerId
+      ) {
+        return res.status(403).json({ error: "Not your request" });
+      }
+      let driverLocation = null;
+      if (doc.status === "dispatched" && doc.driverId) {
+        const d = await db
+          .collection("drivers")
+          .findOne({ _id: doc.driverId }, { projection: { appLocation: 1 } });
+        const loc = d?.appLocation;
+        if (loc && Date.now() - new Date(loc.at).getTime() < 60 * 1000) {
+          driverLocation = { lat: loc.lat, lng: loc.lng, at: loc.at };
+        }
+      }
+      return res.status(200).json({ request: doc, driverLocation });
+    }
+
+    // POST /api/requests?id=DR-001&action=pickup
+    // The driver has reached the passenger. Tells the passenger's screen to
+    // switch from "driver is coming" to "on the way to the drop-off".
+    if (req.method === "POST" && id && action === "pickup") {
+      const session = requireSession(req, res, ["driver"]);
+      if (!session) return;
+      const result = await col.findOneAndUpdate(
+        {
+          _id: id,
+          driverId: session.driverId,
+          status: "dispatched",
+          pickedUpAt: { $exists: false },
+        },
+        { $set: { pickedUpAt: new Date().toISOString() } },
+        { returnDocument: "after" },
+      );
+      const doc = result.value ?? result;
+      if (!doc)
+        return res
+          .status(404)
+          .json({ error: "Trip not found, or already marked picked up" });
+      return res.status(200).json(doc);
+    }
+
     // POST /api/requests?id=DR-001&action=accept
     if (req.method === "POST" && id && action === "accept") {
       // Only an authenticated driver can accept, and only as themself - the

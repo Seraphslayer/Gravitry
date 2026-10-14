@@ -64,10 +64,15 @@ export const updateDriver = (id, patch) =>
 // Driver app heartbeat: tells the server whether this driver is Online. Sent when
 // the driver taps Online / Offline and every ~15s while Online; the admin
 // dashboard shows the driver as Active only while these keep arriving.
-export const sendPresence = (online) =>
+// position ({ lat, lng }) is the driver's live GPS, shared only so the passenger
+// being picked up can watch them arrive.
+export const sendPresence = (online, position) =>
   req("drivers?action=presence", {
     method: "POST",
-    body: JSON.stringify({ online }),
+    body: JSON.stringify({
+      online,
+      ...(position ? { lat: position.lat, lng: position.lng } : {}),
+    }),
   });
 
 // -- Tricycles ----------------------------------------------------------------
@@ -129,6 +134,18 @@ export const acceptRequest = (id, driverId) =>
 
 export const completeRequest = (id) =>
   req(`requests?id=${encodeURIComponent(id)}&action=complete`, {
+    method: "POST",
+  });
+
+// Passenger: the request plus the driver's live position while the driver is
+// on the way. -> { request, driverLocation: { lat, lng, at } | null }
+export const trackRequest = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=track`);
+
+// Driver: reached the passenger (the passenger's screen switches to "on the
+// way to the drop-off").
+export const markPickedUp = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=pickup`, {
     method: "POST",
   });
 

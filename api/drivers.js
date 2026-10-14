@@ -10,6 +10,7 @@ const SENSITIVE_FIELDS = [
   "_id",
   "appOnline",
   "appLastSeen",
+  "appLocation",
 ];
 
 // A driver counts as "active" if their Driver app is switched to Online AND it
@@ -32,22 +33,37 @@ export default async function handler(req, res) {
     const col = db.collection("drivers");
     const { id, action } = req.query;
 
-    // POST /api/drivers?action=presence  { online: true | false }
+    // POST /api/drivers?action=presence  { online: true | false, lat?, lng? }
     // Sent by the Driver app: when the driver taps Online / Offline, and every
-    // ~15 seconds while Online. The driver is always taken from the session.
+    // few seconds while Online (faster during a trip). The driver is always
+    // taken from the session. The GPS position is kept only so the passenger
+    // being picked up can watch their driver arrive (see action=track in
+    // /api/requests); it is never returned by the public driver list.
     if (req.method === "POST" && action === "presence") {
       const session = requireSession(req, res, ["driver"]);
       if (!session) return;
       const online = req.body?.online === true;
-      await col.updateOne(
-        { _id: session.driverId },
-        {
-          $set: {
-            appOnline: online,
-            appLastSeen: new Date().toISOString(),
-          },
-        },
-      );
+      const nowIso = new Date().toISOString();
+      const lat = Number(req.body?.lat);
+      const lng = Number(req.body?.lng);
+      const hasPosition =
+        online &&
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        lat >= 4 &&
+        lat <= 22 &&
+        lng >= 116 &&
+        lng <= 128;
+      const update = {
+        $set: { appOnline: online, appLastSeen: nowIso },
+      };
+      if (hasPosition) {
+        update.$set.appLocation = { lat, lng, at: nowIso };
+      } else if (!online) {
+        // Going offline stops sharing the position right away.
+        update.$unset = { appLocation: "" };
+      }
+      await col.updateOne({ _id: session.driverId }, update);
       return res.status(200).json({ online });
     }
 
@@ -56,7 +72,10 @@ export default async function handler(req, res) {
       // driver list is read by the kiosk, passenger app, and admin dashboard,
       // none of which need credentials.
       const docs = await col
-        .find({}, { projection: { passwordHash: 0, username: 0 } })
+        .find(
+          {},
+          { projection: { passwordHash: 0, username: 0, appLocation: 0 } },
+        )
         .toArray();
       return res.status(200).json(docs.map(withPresence));
     }
@@ -78,7 +97,7 @@ export default async function handler(req, res) {
       await col.updateOne({ _id: id }, { $set: patch });
       const doc = await col.findOne(
         { _id: id },
-        { projection: { passwordHash: 0, username: 0 } },
+        { projection: { passwordHash: 0, username: 0, appLocation: 0 } },
       );
       return res.status(200).json(withPresence(doc));
     }
