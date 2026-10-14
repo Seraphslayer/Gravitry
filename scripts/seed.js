@@ -140,6 +140,23 @@ const tricycles = [
   },
 ];
 
+// All-rounder units: owned by the TODA (no owner) and rented out monthly to
+// drivers who don't have a tricycle. Inserted only if missing, so re-running
+// the seed never wipes an active rental. Rent them from Admin > Tricycles.
+const allRounders = [
+  { _id: "MCC-006", plate: "ABL-6789" },
+  { _id: "MCC-007", plate: "ABL-7890" },
+].map((u) => ({
+  ...u,
+  allRounder: true,
+  driverId: null,
+  driver: null,
+  status: "unassigned",
+  terminal: null,
+  rental: null,
+  rentalHistory: [],
+}));
+
 // Official TODA fare matrix (posted at the terminals): regular per-person fare
 // is PHP 15 for the first kilometer, PHP 20 for succeeding 2-5 km. The special
 // trip / discounted columns are derived from the regular fare in api/fares.js
@@ -195,6 +212,13 @@ async function seed() {
     }
     console.log(`Seeded ${docs.length} ${name}`);
   }
+
+  for (const doc of allRounders) {
+    await db
+      .collection("tricycles")
+      .updateOne({ _id: doc._id }, { $setOnInsert: doc }, { upsert: true });
+  }
+  console.log(`Ensured ${allRounders.length} all-rounder tricycles`);
 
   await db
     .collection("counters")

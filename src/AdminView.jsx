@@ -21,6 +21,10 @@ import {
   getDrivers,
   updateDriver,
   getTricycles,
+  createTricycle,
+  rentTricycle,
+  renewTricycleRental,
+  releaseTricycle,
   getRequests,
   getVerifications,
   getVerificationPhotos,
@@ -59,6 +63,7 @@ function statusBadge(s) {
     available: ["green", "\u25CF Available"],
     on_trip: ["blue", "\u25CF On Trip"],
     off_duty: ["gray", "Off Duty"],
+    unassigned: ["yellow", "Not rented"],
   };
   const [v, label] = m[s] || ["gray", s];
   return <Badge variant={v}>{label}</Badge>;
@@ -361,7 +366,7 @@ function DriversTab({ drivers, loading, onRefresh }) {
                     color: C.text,
                   }}
                 >
-                  {d.unit}
+                  {d.unit || "\u2014"}
                 </td>
                 <td data-label="Rating" style={{ padding: "12px 16px" }}>
                   <div
@@ -412,7 +417,271 @@ function DriversTab({ drivers, loading, onRefresh }) {
   );
 }
 
-function TricyclesTab({ tricycles, loading }) {
+// Today in the Philippines (YYYY-MM-DD), so "due" matches the TODA's calendar.
+const todayManila = () =>
+  new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+
+const fmtDate = (iso) =>
+  iso
+    ? new Date(`${iso}T00:00:00`).toLocaleDateString("en-PH", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "-";
+
+// How a rental's monthly renewal stands: overdue, due within 5 days, or fine.
+function renewalState(renewalDate) {
+  const today = new Date(`${todayManila()}T00:00:00`);
+  const due = new Date(`${renewalDate}T00:00:00`);
+  const days = Math.round((due - today) / 86400000);
+  if (days < 0) return { variant: "red", label: `Overdue ${-days}d`, days };
+  if (days <= 5)
+    return {
+      variant: "yellow",
+      label: days === 0 ? "Due today" : `Due in ${days}d`,
+      days,
+    };
+  return { variant: "green", label: `Renews in ${days}d`, days };
+}
+
+const smallBtn = (bg, fg) => ({
+  background: bg,
+  color: fg,
+  border: "none",
+  borderRadius: 6,
+  padding: "5px 10px",
+  fontFamily: GR,
+  fontWeight: 600,
+  fontSize: 11,
+  cursor: "pointer",
+});
+
+const fieldStyle = {
+  padding: "7px 10px",
+  border: `1.5px solid ${C.border}`,
+  borderRadius: 8,
+  fontFamily: IN,
+  fontSize: 12.5,
+  outline: "none",
+  background: C.white,
+};
+
+// Rental controls for one all-rounder (TODA-owned, no owner) unit.
+function RentalCell({ t, freeDrivers, onChanged }) {
+  const [driverId, setDriverId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const run = async (fn) => {
+    setBusy(true);
+    setErr("");
+    try {
+      await fn();
+      setDriverId("");
+      onChanged();
+    } catch (e) {
+      setErr(String(e.message || e).replace(/^API [^:]*failed: /, ""));
+    }
+    setBusy(false);
+  };
+
+  if (t.rental) {
+    const st = renewalState(t.rental.renewalDate);
+    const colors = {
+      red: { bg: "#FEE2E2", fg: "#991B1B" },
+      yellow: { bg: "#FEF3C7", fg: "#92400E" },
+      green: { bg: "#D1FAE5", fg: "#065F46" },
+    }[st.variant];
+    return (
+      <div>
+        <div style={{ fontFamily: IN, fontSize: 12.5, color: C.text }}>
+          Rented by <b>{t.rental.driverName}</b>
+        </div>
+        <div
+          style={{ fontFamily: IN, fontSize: 11, color: C.muted, marginTop: 2 }}
+        >
+          Since {fmtDate(t.rental.startedAt)} &middot; month{" "}
+          {t.rental.months || 1}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexWrap: "wrap",
+            marginTop: 6,
+          }}
+        >
+          <span
+            style={{
+              padding: "2px 8px",
+              borderRadius: 20,
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: GR,
+              background: colors.bg,
+              color: colors.fg,
+            }}
+          >
+            {st.label}
+          </span>
+          <span style={{ fontFamily: IN, fontSize: 11, color: C.muted }}>
+            {fmtDate(t.rental.renewalDate)}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <button
+            disabled={busy}
+            onClick={() => run(() => renewTricycleRental(t._id))}
+            style={smallBtn(C.green, "#fff")}
+          >
+            Renew +1 month
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => {
+              if (
+                window.confirm(
+                  `End ${t.rental.driverName}'s rental of ${t._id}? The unit goes back to the TODA.`,
+                )
+              )
+                run(() => releaseTricycle(t._id));
+            }}
+            style={smallBtn("#FEE2E2", "#991B1B")}
+          >
+            End rental
+          </button>
+        </div>
+        {err && (
+          <div
+            style={{ color: "#B91C1C", fontFamily: IN, fontSize: 11, marginTop: 6 }}
+          >
+            {err}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <select
+          value={driverId}
+          onChange={(e) => setDriverId(e.target.value)}
+          style={{ ...fieldStyle, maxWidth: 170 }}
+        >
+          <option value="">
+            {freeDrivers.length ? "Rent to driver..." : "No driver without a unit"}
+          </option>
+          {freeDrivers.map((d) => (
+            <option key={d._id} value={d._id}>
+              {d.name}
+            </option>
+          ))}
+        </select>
+        <button
+          disabled={busy || !driverId}
+          onClick={() => run(() => rentTricycle(t._id, driverId))}
+          style={{
+            ...smallBtn(C.navy, "#fff"),
+            opacity: busy || !driverId ? 0.5 : 1,
+          }}
+        >
+          Rent out
+        </button>
+      </div>
+      <div
+        style={{ fontFamily: IN, fontSize: 10.5, color: C.muted, marginTop: 4 }}
+      >
+        Monthly, open-ended. Renews until you end it.
+      </div>
+      {err && (
+        <div
+          style={{ color: "#B91C1C", fontFamily: IN, fontSize: 11, marginTop: 6 }}
+        >
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Form to register a new ownerless all-rounder unit.
+function AddTodaUnit({ onAdded }) {
+  const [open, setOpen] = useState(false);
+  const [unit, setUnit] = useState("");
+  const [plate, setPlate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const save = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      await createTricycle({ unit, plate });
+      setUnit("");
+      setPlate("");
+      setOpen(false);
+      onAdded();
+    } catch (e) {
+      setErr(String(e.message || e).replace(/^API [^:]*failed: /, ""));
+    }
+    setBusy(false);
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} style={smallBtn(C.navy, "#fff")}>
+        + Add TODA unit
+      </button>
+    );
+  }
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+      <input
+        value={unit}
+        onChange={(e) => setUnit(e.target.value)}
+        placeholder="Unit no. (MCC-006)"
+        style={{ ...fieldStyle, width: 150 }}
+      />
+      <input
+        value={plate}
+        onChange={(e) => setPlate(e.target.value)}
+        placeholder="Plate no."
+        style={{ ...fieldStyle, width: 110 }}
+      />
+      <button
+        disabled={busy || !unit.trim() || !plate.trim()}
+        onClick={save}
+        style={{
+          ...smallBtn(C.green, "#fff"),
+          opacity: busy || !unit.trim() || !plate.trim() ? 0.5 : 1,
+        }}
+      >
+        Save
+      </button>
+      <button onClick={() => setOpen(false)} style={smallBtn(C.surface, C.muted)}>
+        Cancel
+      </button>
+      {err && (
+        <span style={{ color: "#B91C1C", fontFamily: IN, fontSize: 11 }}>
+          {err}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function TricyclesTab({ tricycles, drivers, loading, onRefresh }) {
+  // Drivers who have no tricycle of their own can be given an all-rounder.
+  const freeDrivers = drivers.filter(
+    (d) => !d.unit && !tricycles.some((t) => t.driverId === d._id),
+  );
+  const todaUnits = tricycles.filter((t) => t.allRounder);
+  const rentedCount = todaUnits.filter((t) => t.rental).length;
+
   return (
     <div
       style={{
@@ -423,23 +692,41 @@ function TricyclesTab({ tricycles, loading }) {
       }}
     >
       <div
-        style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}` }}
+        style={{
+          padding: "14px 16px",
+          borderBottom: `1px solid ${C.border}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
       >
-        <span
-          style={{
-            fontFamily: GR,
-            fontWeight: 700,
-            fontSize: 14,
-            color: C.text,
-          }}
-        >
-          Registered Tricycles
-        </span>
+        <div>
+          <span
+            style={{
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 14,
+              color: C.text,
+            }}
+          >
+            Registered Tricycles
+          </span>
+          <div
+            style={{ fontFamily: IN, fontSize: 11, color: C.muted, marginTop: 2 }}
+          >
+            {todaUnits.length === 0
+              ? "No TODA all-rounder units yet"
+              : `${todaUnits.length} TODA all-rounder unit${todaUnits.length === 1 ? "" : "s"} (no owner) \u00B7 ${rentedCount} rented`}
+          </div>
+        </div>
+        <AddTodaUnit onAdded={onRefresh} />
       </div>
       <table className="responsive-table">
         <thead>
           <tr style={{ background: C.surface }}>
-            {["Unit No.", "Plate No.", "Driver", "Terminal", "Status"].map(
+            {["Unit No.", "Plate No.", "Driver", "Terminal", "Status", "Rental"].map(
               (h) => (
                 <th
                   key={h}
@@ -463,7 +750,7 @@ function TricyclesTab({ tricycles, loading }) {
           {loading && (
             <tr>
               <td
-                colSpan={5}
+                colSpan={6}
                 style={{
                   padding: 24,
                   textAlign: "center",
@@ -503,16 +790,23 @@ function TricyclesTab({ tricycles, loading }) {
                     >
                       <Truck size={14} color={C.yellow} />
                     </div>
-                    <span
-                      style={{
-                        fontFamily: "monospace",
-                        fontWeight: 700,
-                        fontSize: 13,
-                        color: C.text,
-                      }}
-                    >
-                      {t._id}
-                    </span>
+                    <div>
+                      <span
+                        style={{
+                          fontFamily: "monospace",
+                          fontWeight: 700,
+                          fontSize: 13,
+                          color: C.text,
+                        }}
+                      >
+                        {t._id}
+                      </span>
+                      {t.allRounder && (
+                        <div style={{ marginTop: 3 }}>
+                          <Badge variant="yellow">All-rounder &middot; TODA</Badge>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </td>
                 <td
@@ -532,10 +826,10 @@ function TricyclesTab({ tricycles, loading }) {
                     padding: "12px 16px",
                     fontFamily: IN,
                     fontSize: 13,
-                    color: C.text,
+                    color: t.driver ? C.text : C.muted,
                   }}
                 >
-                  {t.driver}
+                  {t.driver || (t.allRounder ? "No owner" : "-")}
                 </td>
                 <td
                   data-label="Terminal"
@@ -550,6 +844,21 @@ function TricyclesTab({ tricycles, loading }) {
                 </td>
                 <td data-label="Status" style={{ padding: "12px 16px" }}>
                   {statusBadge(t.status)}
+                </td>
+                <td data-label="Rental" style={{ padding: "12px 16px" }}>
+                  {t.allRounder ? (
+                    <RentalCell
+                      t={t}
+                      freeDrivers={freeDrivers}
+                      onChanged={onRefresh}
+                    />
+                  ) : (
+                    <span
+                      style={{ fontFamily: IN, fontSize: 12, color: C.muted }}
+                    >
+                      -
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}
@@ -1638,7 +1947,12 @@ export default function AdminView() {
           <DriversTab drivers={drivers} loading={loading} onRefresh={loadAll} />
         )}
         {tab === "tricycles" && (
-          <TricyclesTab tricycles={tricycles} loading={loading} />
+          <TricyclesTab
+            tricycles={tricycles}
+            drivers={drivers}
+            loading={loading}
+            onRefresh={loadAll}
+          />
         )}
         {tab === "fares" && <TariffTab />}
         {tab === "verify" && (

@@ -1,179 +1,244 @@
-// Thin fetch wrapper around the /api serverless backend.
-// All calls are same-origin (frontend + API deploy together on Vercel).
+// Run once to populate the database: node --env-file=.env scripts/seed.js
+// NOTE: re-running this resets demo drivers/admin (incl. passwords) and fares.
+// To change only the fares on a live database, use scripts/update-fares.js.
+import dns from "node:dns";
+dns.setServers(["8.8.8.8", "8.8.4.4"]); // Windows/Node SRV lookup fix — see api/_db.js
 
-async function req(path, options = {}) {
-  const res = await fetch(`/api/${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      msg = (await res.json()).error || msg;
-    } catch {}
-    throw new Error(`API ${path} failed: ${msg}`);
-  }
-  if (res.status === 204) return null;
-  return res.json();
+import { MongoClient } from "mongodb";
+import bcrypt from "bcryptjs";
+
+const uri = process.env.MONGODB_URI;
+if (!uri) {
+  console.error(
+    "Missing MONGODB_URI. Set it in your environment or .env file.",
+  );
+  process.exit(1);
 }
 
-// -- Auth ---------------------------------------------------------------
-export const login = (username, password) =>
-  req("auth?action=login", {
-    method: "POST",
-    body: JSON.stringify({ username, password }),
-  });
+const hash = (p) => bcrypt.hashSync(p, 10);
+const DEMO_DRIVER_PASSWORD = "toda2026"; // ⚠️ change before real deployment
+const DEMO_ADMIN_PASSWORD = "admin2026"; // ⚠️ change before real deployment
 
-// data: { username, password, name, phone, address, idPhoto, selfie, consent,
-//         discountClaim?, discountIdPhoto? }
-// discountClaim is "student" | "senior" | "pwd" (or omitted); when set,
-// discountIdPhoto must be a photo of that ID.
-export const signup = (data) =>
-  req("auth?action=signup", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
+const drivers = [
+  {
+    _id: "D1",
+    name: "Rolando Dela Cruz",
+    license: "N01-23-456789",
+    contact: "0917 123 4567",
+    unit: "MCC-001",
+    plate: "ABL-1234",
+    status: "available",
+    rating: 4.9,
+    tripsCompleted: 214,
+    licenseExpiry: "2027-03-15",
+    franchiseExpiry: "2026-11-02",
+    username: "rolando",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
+  },
+  {
+    _id: "D2",
+    name: "Eduardo Santos",
+    license: "N01-23-567890",
+    contact: "0918 234 5678",
+    unit: "MCC-002",
+    plate: "ABL-2345",
+    status: "on_trip",
+    rating: 4.7,
+    tripsCompleted: 189,
+    licenseExpiry: "2026-08-20",
+    franchiseExpiry: "2026-08-05",
+    username: "eduardo",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
+  },
+  {
+    _id: "D3",
+    name: "Marlon Reyes",
+    license: "N01-23-678901",
+    contact: "0919 345 6789",
+    unit: "MCC-003",
+    plate: "ABL-3456",
+    status: "available",
+    rating: 4.8,
+    tripsCompleted: 301,
+    licenseExpiry: "2028-01-10",
+    franchiseExpiry: "2027-04-18",
+    username: "marlon",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
+  },
+  {
+    _id: "D4",
+    name: "Danilo Bautista",
+    license: "N01-23-789012",
+    contact: "0920 456 7890",
+    unit: "MCC-004",
+    plate: "ABL-4567",
+    status: "available",
+    rating: 4.6,
+    tripsCompleted: 98,
+    licenseExpiry: "2026-07-30",
+    franchiseExpiry: "2026-12-01",
+    username: "danilo",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
+  },
+  {
+    _id: "D5",
+    name: "Felix Villanueva",
+    license: "N01-23-890123",
+    contact: "0921 567 8901",
+    unit: "MCC-005",
+    plate: "ABL-5678",
+    status: "off_duty",
+    rating: 4.3,
+    tripsCompleted: 47,
+    licenseExpiry: "2026-06-01",
+    franchiseExpiry: "2026-06-15",
+    username: "felix",
+    passwordHash: hash(DEMO_DRIVER_PASSWORD),
+  },
+];
 
-// data: { idPhoto, selfie, consent, discountIdPhoto? } - for a rejected/pending passenger
-export const resubmitVerification = (data) =>
-  req("auth?action=resubmit", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
+const tricycles = [
+  {
+    _id: "MCC-001",
+    plate: "ABL-1234",
+    driverId: "D1",
+    driver: "Rolando Dela Cruz",
+    status: "available",
+    terminal: "T1",
+  },
+  {
+    _id: "MCC-002",
+    plate: "ABL-2345",
+    driverId: "D2",
+    driver: "Eduardo Santos",
+    status: "on_trip",
+    terminal: null,
+  },
+  {
+    _id: "MCC-003",
+    plate: "ABL-3456",
+    driverId: "D3",
+    driver: "Marlon Reyes",
+    status: "available",
+    terminal: "T1",
+  },
+  {
+    _id: "MCC-004",
+    plate: "ABL-4567",
+    driverId: "D4",
+    driver: "Danilo Bautista",
+    status: "available",
+    terminal: "T2",
+  },
+  {
+    _id: "MCC-005",
+    plate: "ABL-5678",
+    driverId: "D5",
+    driver: "Felix Villanueva",
+    status: "off_duty",
+    terminal: "T3",
+  },
+];
 
-export const logout = () => req("auth?action=logout", { method: "POST" });
+// All-rounder units: owned by the TODA (no owner) and rented out monthly to
+// drivers who don't have a tricycle. Inserted only if missing, so re-running
+// the seed never wipes an active rental. Rent them from Admin > Tricycles.
+const allRounders = [
+  { _id: "MCC-006", plate: "ABL-6789" },
+  { _id: "MCC-007", plate: "ABL-7890" },
+].map((u) => ({
+  ...u,
+  allRounder: true,
+  driverId: null,
+  driver: null,
+  status: "unassigned",
+  terminal: null,
+  rental: null,
+  rentalHistory: [],
+}));
 
-export const getMe = () => req("auth?action=me");
-
-// -- Fares ----------------------------------------------------------------
-export const getFares = () => req("fares");
-export const updateFare = (origin, destination, fare) =>
-  req("fares", {
-    method: "PATCH",
-    body: JSON.stringify({ origin, destination, fare }),
-  });
-
-// -- Drivers ----------------------------------------------------------------
-export const getDrivers = () => req("drivers");
-export const updateDriver = (id, patch) =>
-  req(`drivers?id=${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch),
-  });
-
-// Driver app heartbeat: tells the server whether this driver is Online. Sent when
-// the driver taps Online / Offline and every ~15s while Online; the admin
-// dashboard shows the driver as Active only while these keep arriving.
-// position ({ lat, lng }) is the driver's live GPS, shared only so the passenger
-// being picked up can watch them arrive.
-export const sendPresence = (online, position) =>
-  req("drivers?action=presence", {
-    method: "POST",
-    body: JSON.stringify({
-      online,
-      ...(position ? { lat: position.lat, lng: position.lng } : {}),
-    }),
-  });
-
-// -- Tricycles ----------------------------------------------------------------
-export const getTricycles = () => req("tricycles");
-
-// -- Dispatch requests ----------------------------------------------------------------
-// source is "kiosk" for rides made at the kiosk. Logged-in passengers are
-// identified by their session cookie.
-// discountClaim ("student" | "senior" | "pwd") is only used by the kiosk: the
-// driver confirms it by tapping their NFC card. Logged-in passengers get their
-// verified discount automatically on the server.
-// The route, distance and fare come from a signed quote (see getQuote), never
-// from the browser. origin / destination are the TERMINALS nearest to the
-// pickup and drop-off points: they pick the queue the ride goes to.
-// { origin, destination, quoteToken, source?, discountClaim? }
-export const createRequest = ({
+// Official TODA fare matrix (posted at the terminals): regular per-person fare
+// is PHP 15 for the first kilometer, PHP 20 for succeeding 2-5 km. The special
+// trip / discounted columns are derived from the regular fare in api/fares.js
+// (special = x3, discounted = 80%), so only the regular fare is stored here.
+// All three Mary Cris Complex terminals are within the first kilometer of each
+// other, so every route is the first-km fare. Set a route to 20 if its actual
+// road distance is over 1 km.
+const FIRST_KM_FARE = 15;
+const fareEntries = [
+  ["T1", "T2", FIRST_KM_FARE],
+  ["T1", "T3", FIRST_KM_FARE],
+  ["T2", "T1", FIRST_KM_FARE],
+  ["T2", "T3", FIRST_KM_FARE],
+  ["T3", "T1", FIRST_KM_FARE],
+  ["T3", "T2", FIRST_KM_FARE],
+].map(([origin, destination, fare]) => ({
+  _id: `${origin}-${destination}`,
   origin,
   destination,
-  quoteToken,
-  source,
-  discountClaim,
-}) =>
-  req("requests", {
-    method: "POST",
-    body: JSON.stringify({
-      origin,
-      destination,
-      quoteToken,
-      ...(source ? { source } : {}),
-      ...(discountClaim ? { discountClaim } : {}),
-    }),
+  fare,
+  updatedAt: new Date(),
+  history: [{ fare, changedAt: new Date() }],
+}));
+
+const admins = [
+  {
+    _id: "U1",
+    username: "admin",
+    name: "TODA Admin",
+    passwordHash: hash(DEMO_ADMIN_PASSWORD),
+  },
+];
+
+async function seed() {
+  const client = new MongoClient(uri);
+  await client.connect();
+  const db = client.db("gravitry");
+
+  // Clean out old T4-pair fare entries left over from the placeholder terminal set
+  await db.collection("fares").deleteMany({
+    $or: [{ origin: "T4" }, { destination: "T4" }],
   });
 
-// Road distance and fare between two exact map points. pickup / dropoff are
-// { lat, lng, label }. Returns { quoteToken, distanceMeters, estimated,
-// geometry, regularFare, fare, discountType, discountApplied }.
-export const getQuote = (pickup, dropoff) =>
-  req("quote", {
-    method: "POST",
-    body: JSON.stringify({
-      pickup: { lat: pickup.lat, lng: pickup.lng, label: pickup.label },
-      dropoff: { lat: dropoff.lat, lng: dropoff.lng, label: dropoff.label },
-    }),
-  });
+  for (const [name, docs] of [
+    ["drivers", drivers],
+    ["tricycles", tricycles],
+    ["fares", fareEntries],
+    ["users", admins],
+  ]) {
+    const col = db.collection(name);
+    for (const doc of docs) {
+      await col.updateOne({ _id: doc._id }, { $set: doc }, { upsert: true });
+    }
+    console.log(`Seeded ${docs.length} ${name}`);
+  }
 
-export const getRequests = (params = {}) => {
-  const qs = new URLSearchParams(params).toString();
-  return req(`requests${qs ? `?${qs}` : ""}`);
-};
+  for (const doc of allRounders) {
+    await db
+      .collection("tricycles")
+      .updateOne({ _id: doc._id }, { $setOnInsert: doc }, { upsert: true });
+  }
+  console.log(`Ensured ${allRounders.length} all-rounder tricycles`);
 
-export const getRequestById = (id) =>
-  req(`requests?id=${encodeURIComponent(id)}`);
+  await db
+    .collection("counters")
+    .updateOne(
+      { _id: "requests" },
+      { $setOnInsert: { seq: 0 } },
+      { upsert: true },
+    );
 
-export const acceptRequest = (id, driverId) =>
-  req(`requests?id=${encodeURIComponent(id)}&action=accept`, {
-    method: "POST",
-    body: JSON.stringify({ driverId }),
-  });
+  console.log("Done.");
+  console.log(
+    `Driver login (all 5): username as listed, password "${DEMO_DRIVER_PASSWORD}"`,
+  );
+  console.log(
+    `Admin login: username "admin", password "${DEMO_ADMIN_PASSWORD}"`,
+  );
+  await client.close();
+}
 
-export const completeRequest = (id) =>
-  req(`requests?id=${encodeURIComponent(id)}&action=complete`, {
-    method: "POST",
-  });
-
-// Passenger: the request plus the driver's live position while the driver is
-// on the way. -> { request, driverLocation: { lat, lng, at } | null }
-export const trackRequest = (id) =>
-  req(`requests?id=${encodeURIComponent(id)}&action=track`);
-
-// Driver: reached the passenger (the passenger's screen switches to "on the
-// way to the drop-off").
-export const markPickedUp = (id) =>
-  req(`requests?id=${encodeURIComponent(id)}&action=pickup`, {
-    method: "POST",
-  });
-
-export const cancelRequest = (id) =>
-  req(`requests?id=${encodeURIComponent(id)}&action=cancel`, {
-    method: "POST",
-  });
-
-// NFC card tap (keyboard-emulation reader at a physical terminal). No key
-// header - see api/requests.js for how this endpoint protects itself
-// without a secret the browser could leak.
-export const acceptViaNfc = (nfcId, origin) =>
-  req("requests?action=nfc-accept", {
-    method: "POST",
-    body: JSON.stringify({ nfcId, origin }),
-  });
-
-// -- Passenger verification (admin only) ----------------------------------------------------------------
-export const getVerifications = () => req("verifications");
-export const getVerificationPhotos = (id) =>
-  req(`verifications?id=${encodeURIComponent(id)}`);
-// decision: "approve" | "reject"
-// reason: required when rejecting
-// discountType: when approving - "student" | "senior" | "pwd" | "none"
-export const reviewVerification = (id, decision, reason, discountType) =>
-  req(`verifications?id=${encodeURIComponent(id)}&action=${decision}`, {
-    method: "POST",
-    body: JSON.stringify(
-      decision === "reject" ? { reason } : discountType ? { discountType } : {},
-    ),
-  });
+seed().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
