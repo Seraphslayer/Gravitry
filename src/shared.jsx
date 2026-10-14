@@ -420,15 +420,21 @@ export function nearestTerminal(lat, lng, excludeId = null) {
   return { terminal: best, distanceMeters: Math.round(bestDist) };
 }
 
-// ── Document expiry status helper (used by Admin driver management) ─────────
-export function getDocStatus(dateStr) {
-  const today = new Date();
-  const exp = new Date(dateStr);
-  const daysLeft = Math.round((exp - today) / 86400000);
-  if (daysLeft < 0) return { label: "Expired", variant: "red", daysLeft };
-  if (daysLeft <= 30)
-    return { label: `${daysLeft}d left`, variant: "yellow", daysLeft };
-  return { label: "Valid", variant: "green", daysLeft };
+// ── Driver document status (license / franchise): just Valid or Expired ─────
+// kind is "license" or "franchise". The admin sets it with a dropdown, stored
+// as licenseStatus / franchiseStatus. Drivers saved before that existed fall
+// back to their old expiry date.
+export function getDocStatus(driver, kind) {
+  const set = driver?.[`${kind}Status`];
+  let expired;
+  if (set === "valid" || set === "expired") expired = set === "expired";
+  else {
+    const d = driver?.[`${kind}Expiry`];
+    expired = !!d && new Date(d) < new Date();
+  }
+  return expired
+    ? { value: "expired", label: "Expired", variant: "red" }
+    : { value: "valid", label: "Valid", variant: "green" };
 }
 
 // ── Live GPS location — continuous tracking, shared across Kiosk/Driver/Passenger ──

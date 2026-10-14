@@ -10,11 +10,19 @@ import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
 const PENDING_CAN_BOOK = true;
 
 // Returns the names of a driver's expired documents (license / franchise).
+// The admin marks each one Valid or Expired (licenseStatus / franchiseStatus).
+// Older records without that fall back to their expiry date. A driver with ANY
+// expired document cannot take trips.
 function expiredDocsOf(driver) {
   const today = new Date().toISOString().slice(0, 10);
+  const isExpired = (status, date) =>
+    status === "valid" || status === "expired"
+      ? status === "expired"
+      : !!date && date < today;
   const out = [];
-  if (driver.licenseExpiry && driver.licenseExpiry < today) out.push("license");
-  if (driver.franchiseExpiry && driver.franchiseExpiry < today)
+  if (isExpired(driver.licenseStatus, driver.licenseExpiry))
+    out.push("license");
+  if (isExpired(driver.franchiseStatus, driver.franchiseExpiry))
     out.push("franchise");
   return out;
 }

@@ -89,6 +89,12 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "id query param is required" });
       const patch = { ...(req.body || {}) };
       for (const field of SENSITIVE_FIELDS) delete patch[field];
+      for (const f of ["licenseStatus", "franchiseStatus"]) {
+        if (f in patch && !["valid", "expired"].includes(patch[f]))
+          return res
+            .status(400)
+            .json({ error: `${f} must be valid or expired` });
+      }
 
       if (Object.keys(patch).length === 0) {
         return res.status(400).json({ error: "No valid fields to update" });

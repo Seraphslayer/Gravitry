@@ -68,13 +68,22 @@ function statusBadge(s) {
   const [v, label] = m[s] || ["gray", s];
   return <Badge variant={v}>{label}</Badge>;
 }
-function DocBadge({ label, status }) {
-  const map = {
-    red: { bg: "#FEE2E2", fg: "#991B1B" },
-    yellow: { bg: "#FEF3C7", fg: "#92400E" },
-    green: { bg: "#D1FAE5", fg: "#065F46" },
+// Dropdown to mark a driver's license / franchise Valid or Expired. A driver
+// with an Expired document cannot accept or take trips.
+function DocSelect({ label, kind, driver, onSaved }) {
+  const [saving, setSaving] = useState(false);
+  const current = getDocStatus(driver, kind);
+  const expired = current.value === "expired";
+  const change = async (e) => {
+    setSaving(true);
+    try {
+      await updateDriver(driver._id, { [`${kind}Status`]: e.target.value });
+      onSaved();
+    } catch {
+      alert("Could not update. Try again.");
+    }
+    setSaving(false);
   };
-  const { bg, fg } = map[status.variant];
   return (
     <div
       style={{
@@ -83,23 +92,29 @@ function DocBadge({ label, status }) {
         gap: 5,
         fontSize: 10.5,
         fontFamily: IN,
-        marginBottom: 2,
+        marginBottom: 3,
       }}
     >
       <span style={{ color: C.muted, minWidth: 52 }}>{label}</span>
-      <span
+      <select
+        value={current.value}
+        onChange={change}
+        disabled={saving}
         style={{
-          background: bg,
-          color: fg,
+          background: expired ? "#FEE2E2" : "#D1FAE5",
+          color: expired ? "#991B1B" : "#065F46",
+          border: "none",
           borderRadius: 8,
-          padding: "1px 7px",
+          padding: "2px 6px",
           fontWeight: 700,
           fontFamily: GR,
-          fontSize: 10,
+          fontSize: 10.5,
+          cursor: "pointer",
         }}
       >
-        {status.label}
-      </span>
+        <option value="valid">Valid</option>
+        <option value="expired">Expired</option>
+      </select>
     </div>
   );
 }
@@ -391,13 +406,17 @@ function DriversTab({ drivers, loading, onRefresh }) {
                   </div>
                 </td>
                 <td data-label="Documents" style={{ padding: "12px 16px" }}>
-                  <DocBadge
+                  <DocSelect
                     label="License"
-                    status={getDocStatus(d.licenseExpiry)}
+                    kind="license"
+                    driver={d}
+                    onSaved={onRefresh}
                   />
-                  <DocBadge
+                  <DocSelect
                     label="Franchise"
-                    status={getDocStatus(d.franchiseExpiry)}
+                    kind="franchise"
+                    driver={d}
+                    onSaved={onRefresh}
                   />
                 </td>
                 <td data-label="NFC Card" style={{ padding: "12px 16px" }}>
@@ -555,7 +574,12 @@ function RentalCell({ t, freeDrivers, onChanged }) {
         </div>
         {err && (
           <div
-            style={{ color: "#B91C1C", fontFamily: IN, fontSize: 11, marginTop: 6 }}
+            style={{
+              color: "#B91C1C",
+              fontFamily: IN,
+              fontSize: 11,
+              marginTop: 6,
+            }}
           >
             {err}
           </div>
@@ -573,7 +597,9 @@ function RentalCell({ t, freeDrivers, onChanged }) {
           style={{ ...fieldStyle, maxWidth: 170 }}
         >
           <option value="">
-            {freeDrivers.length ? "Rent to driver..." : "No driver without a unit"}
+            {freeDrivers.length
+              ? "Rent to driver..."
+              : "No driver without a unit"}
           </option>
           {freeDrivers.map((d) => (
             <option key={d._id} value={d._id}>
@@ -599,7 +625,12 @@ function RentalCell({ t, freeDrivers, onChanged }) {
       </div>
       {err && (
         <div
-          style={{ color: "#B91C1C", fontFamily: IN, fontSize: 11, marginTop: 6 }}
+          style={{
+            color: "#B91C1C",
+            fontFamily: IN,
+            fontSize: 11,
+            marginTop: 6,
+          }}
         >
           {err}
         </div>
@@ -639,7 +670,14 @@ function AddTodaUnit({ onAdded }) {
     );
   }
   return (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+    <div
+      style={{
+        display: "flex",
+        gap: 6,
+        flexWrap: "wrap",
+        alignItems: "center",
+      }}
+    >
       <input
         value={unit}
         onChange={(e) => setUnit(e.target.value)}
@@ -662,7 +700,10 @@ function AddTodaUnit({ onAdded }) {
       >
         Save
       </button>
-      <button onClick={() => setOpen(false)} style={smallBtn(C.surface, C.muted)}>
+      <button
+        onClick={() => setOpen(false)}
+        style={smallBtn(C.surface, C.muted)}
+      >
         Cancel
       </button>
       {err && (
@@ -714,7 +755,12 @@ function TricyclesTab({ tricycles, drivers, loading, onRefresh }) {
             Registered Tricycles
           </span>
           <div
-            style={{ fontFamily: IN, fontSize: 11, color: C.muted, marginTop: 2 }}
+            style={{
+              fontFamily: IN,
+              fontSize: 11,
+              color: C.muted,
+              marginTop: 2,
+            }}
           >
             {todaUnits.length === 0
               ? "No TODA all-rounder units yet"
@@ -726,24 +772,29 @@ function TricyclesTab({ tricycles, drivers, loading, onRefresh }) {
       <table className="responsive-table">
         <thead>
           <tr style={{ background: C.surface }}>
-            {["Unit No.", "Plate No.", "Driver", "Terminal", "Status", "Rental"].map(
-              (h) => (
-                <th
-                  key={h}
-                  style={{
-                    padding: "10px 16px",
-                    textAlign: "left",
-                    fontSize: 11,
-                    fontFamily: GR,
-                    fontWeight: 600,
-                    color: C.muted,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {h}
-                </th>
-              ),
-            )}
+            {[
+              "Unit No.",
+              "Plate No.",
+              "Driver",
+              "Terminal",
+              "Status",
+              "Rental",
+            ].map((h) => (
+              <th
+                key={h}
+                style={{
+                  padding: "10px 16px",
+                  textAlign: "left",
+                  fontSize: 11,
+                  fontFamily: GR,
+                  fontWeight: 600,
+                  color: C.muted,
+                  textTransform: "uppercase",
+                }}
+              >
+                {h}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -803,7 +854,9 @@ function TricyclesTab({ tricycles, drivers, loading, onRefresh }) {
                       </span>
                       {t.allRounder && (
                         <div style={{ marginTop: 3 }}>
-                          <Badge variant="yellow">All-rounder &middot; TODA</Badge>
+                          <Badge variant="yellow">
+                            All-rounder &middot; TODA
+                          </Badge>
                         </div>
                       )}
                     </div>
