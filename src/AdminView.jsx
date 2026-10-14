@@ -31,9 +31,8 @@ import {
   getRequests,
   getVerifications,
   getUserStats,
-  getSettings,
-  saveSettings,
-  extendTempAccess,
+  getPassengers,
+  setTimeLeft,
   getVerificationPhotos,
   reviewVerification,
 } from "./api.js";
@@ -44,6 +43,7 @@ function Badge({ children, variant = "gray" }) {
     blue: { bg: "#DBEAFE", fg: "#1E40AF" },
     gray: { bg: "#F3F4F6", fg: "#374151" },
     yellow: { bg: "#FEF3C7", fg: "#92400E" },
+    red: { bg: "#FEE2E2", fg: "#991B1B" },
   };
   const { bg, fg } = map[variant] || map.gray;
   return (
@@ -2334,112 +2334,48 @@ const DURATION_UNITS = [
   ["days", 86400],
 ];
 
-// Admin: how long a not-yet-verified passenger may keep booking rides.
-function TempAccessSettings() {
-  const [value, setValue] = useState("");
-  const [unit, setUnit] = useState(60);
-  const [saved, setSaved] = useState(null); // seconds
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useNotice("");
-  useEffect(() => {
-    getSettings()
-      .then((s) => {
-        const secs = s.tempAccessSeconds;
-        // Show it in the biggest unit that divides evenly.
-        const u = [...DURATION_UNITS].reverse().find(([, m]) => secs % m === 0);
-        setUnit(u[1]);
-        setValue(String(secs / u[1]));
-        setSaved(secs);
-      })
-      .catch(() => {});
-  }, []);
-  const seconds = Math.round(Number(value) * unit);
-  const save = async () => {
-    setBusy(true);
-    setMsg("");
-    try {
-      const r = await saveSettings(seconds);
-      setSaved(r.tempAccessSeconds);
-      setMsg("Saved");
-    } catch (e) {
-      setMsg(cleanErr(e));
-    }
-    setBusy(false);
-  };
-  const disabled = busy || !value || !(seconds > 0) || seconds === saved;
-  return (
-    <div
-      style={{
-        padding: "12px 16px",
-        borderBottom: `1px solid ${C.border}`,
-        background: C.surface,
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        flexWrap: "wrap",
-        fontFamily: IN,
-        fontSize: 12.5,
-        color: C.text,
-      }}
-    >
-      <span>
-        <b>Temporary access:</b> new accounts can book rides for
-      </span>
-      <input
-        type="number"
-        min="1"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        style={{ ...fieldStyle, width: 80 }}
-      />
-      <select
-        value={unit}
-        onChange={(e) => setUnit(Number(e.target.value))}
-        style={fieldStyle}
-      >
-        {DURATION_UNITS.map(([label, m]) => (
-          <option key={label} value={m}>
-            {label}
-          </option>
-        ))}
-      </select>
-      <span>while waiting for verification.</span>
-      <button
-        disabled={disabled}
-        onClick={save}
-        style={{ ...smallBtn(C.navy, "#fff"), opacity: disabled ? 0.5 : 1 }}
-      >
-        Save
-      </button>
-      {msg && <span style={{ color: C.muted }}>{msg}</span>}
-    </div>
-  );
+// "2m 05s left", "1h 03m left", "Expired"
+function timeLeftText(until, nowMs) {
+  const ms = new Date(until).getTime() - nowMs;
+  if (ms <= 0) return null;
+  const t = Math.ceil(ms / 1000);
+  const d = Math.floor(t / 86400);
+  const h = Math.floor((t % 86400) / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = t % 60;
+  if (d > 0) return `${d}d ${h}h left`;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m left`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, "0")}s left`;
+  return `${sec}s left`;
 }
 
-// Per-passenger temporary access: shows the end time and lets staff extend it.
+// Per-account temporary access: live countdown, and the admin can set how much
+// time THIS account has left (counted from now), or expire it right away.
 function TempAccessControl({ p, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useNotice("");
-  const until = p.tempAccessUntil ? new Date(p.tempAccessUntil) : null;
-  const expired = until && until < new Date();
-  const run = async (body) => {
+  const [value, setValue] = useState("");
+  const [unit, setUnit] = useState(60);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const left = p.tempAccessUntil ? timeLeftText(p.tempAccessUntil, now) : null;
+  const expired = p.tempAccessUntil && !left;
+  const run = async (seconds) => {
     setBusy(true);
     setErr("");
     try {
-      await extendTempAccess(p._id, body);
+      await setTimeLeft(p._id, seconds);
+      setValue("");
       onChanged();
     } catch (e) {
       setErr(cleanErr(e));
     }
     setBusy(false);
   };
-  const time = until
-    ? until.toLocaleTimeString("en-PH", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      })
-    : "";
+  const secs = Math.round(Number(value) * unit);
   return (
     <div
       style={{
@@ -2454,36 +2390,367 @@ function TempAccessControl({ p, onChanged }) {
     >
       <span
         style={{
-          color: expired ? "#B91C1C" : C.muted,
-          fontWeight: expired ? 700 : 400,
+          color: expired ? "#B91C1C" : C.text,
+          fontWeight: 700,
+          minWidth: 96,
         }}
       >
-        {until
-          ? `${expired ? "Temporary access expired" : "Temporary access until"} ${time}`
-          : "No temporary access limit"}
+        {!p.tempAccessUntil
+          ? "No time limit"
+          : expired
+            ? "Access expired"
+            : left}
       </span>
-      <button
-        disabled={busy}
-        onClick={() => run({ seconds: 300 })}
-        style={smallBtn(C.surface, C.text)}
-      >
-        +5 min
-      </button>
-      <button
-        disabled={busy}
-        onClick={() => run({ seconds: 86400 })}
-        style={smallBtn(C.surface, C.text)}
-      >
-        +1 day
-      </button>
+      <span style={{ color: C.muted }}>Set time left:</span>
       <input
-        type="date"
-        disabled={busy}
-        onChange={(e) => e.target.value && run({ until: e.target.value })}
-        title="Set an exact end date"
-        style={{ ...fieldStyle, padding: "3px 6px", fontSize: 11 }}
+        type="number"
+        min="0"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        style={{ ...fieldStyle, width: 64, padding: "4px 6px", fontSize: 11.5 }}
       />
+      <select
+        value={unit}
+        onChange={(e) => setUnit(Number(e.target.value))}
+        style={{ ...fieldStyle, padding: "4px 6px", fontSize: 11.5 }}
+      >
+        {DURATION_UNITS.map(([label, m]) => (
+          <option key={label} value={m}>
+            {label}
+          </option>
+        ))}
+      </select>
+      <button
+        disabled={busy || value === "" || !(secs >= 0)}
+        onClick={() => run(secs)}
+        style={{
+          ...smallBtn(C.navy, "#fff"),
+          opacity: busy || value === "" || !(secs >= 0) ? 0.5 : 1,
+        }}
+      >
+        Set
+      </button>
+      <button
+        disabled={busy || expired}
+        onClick={() => run(0)}
+        style={{
+          ...smallBtn("#FEE2E2", "#991B1B"),
+          opacity: busy || expired ? 0.5 : 1,
+        }}
+      >
+        Expire now
+      </button>
       {err && <span style={{ color: "#B91C1C" }}>{err}</span>}
+    </div>
+  );
+}
+
+// All registered users: passengers (from the server) and drivers.
+function UsersTab() {
+  const [passengers, setPassengers] = useState([]);
+  const [drivers, setDrivers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all"); // all | passenger | driver
+  const [q, setQ] = useState("");
+  const [now, setNow] = useState(Date.now());
+
+  const load = useCallback(async () => {
+    try {
+      const [p, d] = await Promise.all([getPassengers(), getDrivers()]);
+      setPassengers(p);
+      setDrivers(d);
+    } catch {
+      /* keep last known list */
+    }
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 8000);
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => {
+      clearInterval(id);
+      clearInterval(tick);
+    };
+  }, [load]);
+
+  const rows = [
+    ...passengers.map((p) => ({
+      key: p._id,
+      type: "passenger",
+      name: p.name,
+      username: p.username,
+      contact: p.phone || "",
+      address: p.address || "",
+      status: p.status,
+      discount: p.discountType ? discountLabel(p.discountType) : "",
+      tempAccessUntil: p.tempAccessUntil,
+      joined: p.createdAt,
+    })),
+    ...drivers.map((d) => ({
+      key: d._id,
+      type: "driver",
+      name: d.name,
+      username: d._id,
+      contact: d.contact || "",
+      address: d.unit ? `Unit ${d.unit} · ${d.plate || ""}` : "No unit",
+      status: d.appActive ? "active" : "off duty",
+      discount: "",
+      joined: null,
+    })),
+  ]
+    .filter((r) => filter === "all" || r.type === filter)
+    .filter((r) => {
+      const t = q.trim().toLowerCase();
+      return (
+        !t ||
+        [r.name, r.username, r.contact, r.address]
+          .join(" ")
+          .toLowerCase()
+          .includes(t)
+      );
+    });
+
+  const statusBadgeFor = (r) => {
+    if (r.type === "driver")
+      return (
+        <Badge variant={r.status === "active" ? "green" : "gray"}>
+          {r.status === "active" ? "Active" : "Off duty"}
+        </Badge>
+      );
+    if (r.status === "pending") {
+      const left = r.tempAccessUntil
+        ? timeLeftText(r.tempAccessUntil, now)
+        : null;
+      return (
+        <div>
+          <Badge variant="yellow">Unverified</Badge>
+          <div
+            style={{
+              fontFamily: IN,
+              fontSize: 10.5,
+              marginTop: 3,
+              color: left ? C.muted : "#B91C1C",
+            }}
+          >
+            {r.tempAccessUntil
+              ? left
+                ? `Temp access: ${left}`
+                : "Temp access expired"
+              : ""}
+          </div>
+        </div>
+      );
+    }
+    if (r.status === "rejected") return <Badge variant="red">Rejected</Badge>;
+    return <Badge variant="green">Verified</Badge>;
+  };
+
+  const th = {
+    padding: "10px 16px",
+    textAlign: "left",
+    fontSize: 11,
+    fontFamily: GR,
+    fontWeight: 600,
+    color: C.muted,
+    textTransform: "uppercase",
+  };
+  return (
+    <div
+      style={{
+        background: C.white,
+        borderRadius: 12,
+        border: `1px solid ${C.border}`,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "14px 16px",
+          borderBottom: `1px solid ${C.border}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        <span
+          style={{
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 14,
+            color: C.text,
+          }}
+        >
+          All users ({rows.length})
+        </span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[
+            ["all", "All"],
+            ["passenger", `Passengers (${passengers.length})`],
+            ["driver", `Drivers (${drivers.length})`],
+          ].map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setFilter(k)}
+              style={smallBtn(
+                filter === k ? C.navy : C.surface,
+                filter === k ? "#fff" : C.text,
+              )}
+            >
+              {label}
+            </button>
+          ))}
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search name, username, address"
+            style={{ ...fieldStyle, width: 210 }}
+          />
+        </div>
+      </div>
+      <table className="responsive-table">
+        <thead>
+          <tr style={{ background: C.surface }}>
+            {[
+              "Name",
+              "Type",
+              "Username",
+              "Contact",
+              "Address / Unit",
+              "Discount",
+              "Status",
+              "Joined",
+            ].map((h) => (
+              <th key={h} style={th}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {loading && (
+            <tr>
+              <td
+                colSpan={8}
+                style={{
+                  padding: 24,
+                  textAlign: "center",
+                  color: C.muted,
+                  fontFamily: IN,
+                  fontSize: 13,
+                }}
+              >
+                Loading...
+              </td>
+            </tr>
+          )}
+          {!loading && rows.length === 0 && (
+            <tr>
+              <td
+                colSpan={8}
+                style={{
+                  padding: 24,
+                  textAlign: "center",
+                  color: C.muted,
+                  fontFamily: IN,
+                  fontSize: 13,
+                }}
+              >
+                No users found
+              </td>
+            </tr>
+          )}
+          {rows.map((r, i) => (
+            <tr
+              key={r.type + r.key}
+              style={{
+                borderTop: `1px solid ${C.border}`,
+                background: i % 2 === 0 ? C.white : "#FAFAF8",
+              }}
+            >
+              <td
+                data-label="Name"
+                style={{
+                  padding: "11px 16px",
+                  fontFamily: GR,
+                  fontWeight: 600,
+                  fontSize: 13,
+                  color: C.text,
+                }}
+              >
+                {r.name}
+              </td>
+              <td data-label="Type" style={{ padding: "11px 16px" }}>
+                <Badge variant={r.type === "driver" ? "blue" : "gray"}>
+                  {r.type === "driver" ? "Driver" : "Passenger"}
+                </Badge>
+              </td>
+              <td
+                data-label="Username"
+                style={{
+                  padding: "11px 16px",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  color: C.muted,
+                }}
+              >
+                {r.type === "driver" ? r.username : `@${r.username}`}
+              </td>
+              <td
+                data-label="Contact"
+                style={{
+                  padding: "11px 16px",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  color: C.text,
+                }}
+              >
+                {r.contact || "-"}
+              </td>
+              <td
+                data-label="Address / Unit"
+                style={{
+                  padding: "11px 16px",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  color: C.text,
+                }}
+              >
+                {r.address || "-"}
+              </td>
+              <td
+                data-label="Discount"
+                style={{
+                  padding: "11px 16px",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  color: C.text,
+                }}
+              >
+                {r.discount || "-"}
+              </td>
+              <td data-label="Status" style={{ padding: "11px 16px" }}>
+                {statusBadgeFor(r)}
+              </td>
+              <td
+                data-label="Joined"
+                style={{
+                  padding: "11px 16px",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  color: C.muted,
+                }}
+              >
+                {r.joined
+                  ? new Date(r.joined).toLocaleDateString("en-PH")
+                  : "-"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -2513,7 +2780,6 @@ function VerifyTab({ items, loading, onChanged }) {
           Accounts waiting for verification
         </span>
       </div>
-      <TempAccessSettings />
       {loading && (
         <p
           style={{
@@ -2787,6 +3053,7 @@ export default function AdminView() {
             ["drivers", "Drivers"],
             ["tricycles", "Tricycles"],
             ["fares", "Tariff"],
+            ["users", "Users"],
             ["verify", "Verify"],
             ["log", "Log"],
           ].map(([key, label]) => (
@@ -2840,6 +3107,7 @@ export default function AdminView() {
           />
         )}
         {tab === "fares" && <TariffTab />}
+        {tab === "users" && <UsersTab />}
         {tab === "verify" && (
           <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
         )}

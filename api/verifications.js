@@ -1,12 +1,6 @@
 import { getDb } from "./_db.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
-import {
-  getTempAccessSeconds,
-  plusSeconds,
-  tempAccessDeadline,
-  MIN_TEMP_ACCESS_SECONDS,
-  MAX_TEMP_ACCESS_SECONDS,
-} from "./_settings.js";
+import { tempAccessDeadline, MAX_TEMP_ACCESS_SECONDS } from "./_settings.js";
 
 // Admin-only. TODA staff use this to review the government ID photo and
 // selfie that a new passenger submitted, then approve (account becomes
@@ -51,14 +45,10 @@ export default async function handler(req, res) {
         )
         .sort({ verificationSubmittedAt: 1 })
         .toArray();
-      const secs = await getTempAccessSeconds(db);
       return res
         .status(200)
         .json(
-          docs.map((d) => ({
-            ...d,
-            tempAccessUntil: tempAccessDeadline(d, secs),
-          })),
+          docs.map((d) => ({ ...d, tempAccessUntil: tempAccessDeadline(d) })),
         );
     }
 
@@ -81,33 +71,37 @@ export default async function handler(req, res) {
       });
     }
 
-    // GET /api/verifications?action=settings
-    // POST /api/verifications?action=settings  { seconds }
-    // How long a not-yet-verified passenger may keep booking rides.
-    if (action === "settings") {
-      if (req.method === "GET")
-        return res
-          .status(200)
-          .json({ tempAccessSeconds: await getTempAccessSeconds(db) });
-      if (req.method === "POST") {
-        const n = Math.round(Number(req.body?.seconds));
-        if (
-          !Number.isFinite(n) ||
-          n < MIN_TEMP_ACCESS_SECONDS ||
-          n > MAX_TEMP_ACCESS_SECONDS
+    // GET /api/verifications?action=users - every passenger account (no
+    // passwords, no photos), newest first, for the admin Users list.
+    if (req.method === "GET" && action === "users") {
+      const docs = await passengers
+        .find(
+          {},
+          {
+            projection: {
+              name: 1,
+              username: 1,
+              phone: 1,
+              address: 1,
+              status: 1,
+              discountType: 1,
+              discountClaim: 1,
+              createdAt: 1,
+              verificationSubmittedAt: 1,
+              tempAccessUntil: 1,
+            },
+          },
         )
-          return res
-            .status(400)
-            .json({ error: "Enter a duration from 5 seconds to 365 days" });
-        await db
-          .collection("settings")
-          .updateOne(
-            { _id: "app" },
-            { $set: { tempAccessSeconds: n } },
-            { upsert: true },
-          );
-        return res.status(200).json({ tempAccessSeconds: n });
-      }
+        .sort({ createdAt: -1 })
+        .toArray();
+      return res.status(200).json(
+        docs.map((d) => ({
+          ...d,
+          status: d.status || "verified",
+          tempAccessUntil:
+            d.status === "pending" ? tempAccessDeadline(d) : null,
+        })),
+      );
     }
 
     if (!isNonEmptyString(id)) {
@@ -146,11 +140,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // POST /api/verifications?id=P-001&action=extend  { seconds } or { until }
-    // Changes when this passenger's temporary access ends: `seconds` counts
-    // from now (or from the current end if still running); `until` is an exact
-    // date (YYYY-MM-DD, end of that day Manila time).
-    if (req.method === "POST" && action === "extend") {
+    // POST /api/verifications?id=P-001&action=timeleft  { seconds }
+    // Sets how much temporary-access time THIS account has left, counted from
+    // now (0 = expire it right away). Only accounts waiting for verification.
+    if (req.method === "POST" && action === "timeleft") {
       const passenger = await passengers.findOne({ _id: id });
       if (!passenger)
         return res.status(404).json({ error: "Passenger not found" });
@@ -158,27 +151,10 @@ export default async function handler(req, res) {
         return res.status(409).json({
           error: "Only accounts waiting for verification have temporary access",
         });
-      let until;
-      const { seconds, until: untilDate } = req.body || {};
-      if (
-        typeof untilDate === "string" &&
-        /^\d{4}-\d{2}-\d{2}$/.test(untilDate)
-      ) {
-        until = new Date(`${untilDate}T23:59:59+08:00`).toISOString();
-      } else {
-        const n = Math.round(Number(seconds));
-        if (!Number.isFinite(n) || n < 1 || n > MAX_TEMP_ACCESS_SECONDS)
-          return res.status(400).json({ error: "Invalid extension" });
-        const current = tempAccessDeadline(
-          passenger,
-          await getTempAccessSeconds(db),
-        );
-        const base =
-          current && new Date(current) > new Date()
-            ? current
-            : new Date().toISOString();
-        until = plusSeconds(base, n);
-      }
+      const n = Math.round(Number(req.body?.seconds));
+      if (!Number.isFinite(n) || n < 0 || n > MAX_TEMP_ACCESS_SECONDS)
+        return res.status(400).json({ error: "Invalid time" });
+      const until = new Date(Date.now() + n * 1000).toISOString();
       await passengers.updateOne(
         { _id: id },
         { $set: { tempAccessUntil: until } },

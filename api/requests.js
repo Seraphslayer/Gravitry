@@ -1,7 +1,7 @@
 import { getDb } from "./_db.js";
 import { getSessionFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
-import { getTempAccessSeconds, tempAccessDeadline } from "./_settings.js";
+import { tempAccessDeadline } from "./_settings.js";
 import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
 
 // Policy switch: may a passenger whose account is still pending staff
@@ -214,9 +214,9 @@ export default async function handler(req, res) {
           });
         }
         // Temporary access (not yet verified) only lasts so long; the admin
-        // length is set by the admin (Verify tab) and can be extended per account.
+        // time left can be set per account by the admin (Verify tab).
         if (status === "pending") {
-          const until = tempAccessDeadline(p, await getTempAccessSeconds(db));
+          const until = tempAccessDeadline(p);
           if (until && new Date(until) < new Date()) {
             return res.status(403).json({
               error:
