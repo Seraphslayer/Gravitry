@@ -114,6 +114,9 @@ export default async function handler(req, res) {
         idPhoto,
         selfie,
         consent,
+        termsAccepted,
+        finalConfirm,
+        termsVersion,
         discountClaim,
         discountIdPhoto,
       } = req.body || {};
@@ -191,6 +194,14 @@ export default async function handler(req, res) {
       if (pwError) {
         return res.status(400).json({ error: pwError });
       }
+      // The Terms and Conditions are agreed to twice: before the form and again
+      // in the final check, so both must be there.
+      if (termsAccepted !== true || finalConfirm !== true) {
+        return res.status(400).json({
+          error:
+            "You must agree to the Terms and Conditions to create an account",
+        });
+      }
       if (consent !== true) {
         return res
           .status(400)
@@ -248,6 +259,9 @@ export default async function handler(req, res) {
         discountType: null,
         verificationSubmittedAt: nowIso,
         consentAt: nowIso,
+        termsAcceptedAt: nowIso,
+        termsVersion:
+          typeof termsVersion === "string" ? termsVersion.slice(0, 20) : null,
         createdAt: nowIso,
       };
       await db.collection("passengers").insertOne(doc);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { X, ArrowRight, ArrowLeft, CheckCircle } from "lucide-react";
 import {
   C,
@@ -13,6 +13,7 @@ import {
 import { useAuth } from "./AuthContext.jsx";
 import { resubmitVerification } from "./api.js";
 import CameraCapture from "./CameraCapture.jsx";
+import { TERMS_VERSION, TERMS_SECTIONS } from "./terms.js";
 
 // Password rules for new accounts: at least 8 characters, with at least one
 // lowercase letter, one uppercase letter, and one special character
@@ -118,7 +119,7 @@ export default function SignupFlow({ resubmit = false, onClose }) {
   const activeClaim = resubmit ? user?.discountClaim || "" : claim;
 
   const steps = [
-    ...(resubmit ? [] : ["details"]),
+    ...(resubmit ? [] : ["terms", "details"]),
     "id",
     ...(activeClaim ? ["discountId"] : []),
     "selfie",
@@ -143,13 +144,30 @@ export default function SignupFlow({ resubmit = false, onClose }) {
   const [discountIdPhoto, setDiscountIdPhoto] = useState(null);
   const [selfie, setSelfie] = useState(null);
   const [consent, setConsent] = useState(false);
+  const [termsAgree, setTermsAgree] = useState(false); // first agreement (before the form)
+  const [termsRead, setTermsRead] = useState(false); // scrolled to the end of the terms
+  const [finalConfirm, setFinalConfirm] = useState(false); // second agreement (at the end)
+  const termsBox = useRef(null);
   const [error, setError] = useNotice(null);
   const [submitting, setSubmitting] = useState(false);
 
   const discountName = DISCOUNTS[activeClaim]?.label || "";
   const discountIdName = DISCOUNTS[activeClaim]?.idName || "discount ID";
 
+  // The agree box unlocks once the person has scrolled to the end of the terms
+  // (or the terms already fit on screen without scrolling).
+  const checkTermsScrolled = () => {
+    const el = termsBox.current;
+    if (el && el.scrollTop + el.clientHeight >= el.scrollHeight - 8)
+      setTermsRead(true);
+  };
+  useEffect(() => {
+    if (step === "terms") checkTermsScrolled();
+  }, [step]);
+
   const validate = () => {
+    if (step === "terms" && !termsAgree)
+      return "Please read and agree to the Terms and Conditions to continue.";
     if (step === "details") {
       if (!firstName.trim() || !lastName.trim())
         return "Please enter your complete name (first and last name).";
@@ -171,6 +189,8 @@ export default function SignupFlow({ resubmit = false, onClose }) {
     if (step === "selfie" && !selfie) return "Please take a selfie.";
     if (step === "review" && !consent)
       return "Please agree to the terms to continue.";
+    if (step === "review" && !resubmit && !finalConfirm)
+      return "Please confirm your details and the Terms and Conditions to submit.";
     return null;
   };
 
@@ -222,6 +242,9 @@ export default function SignupFlow({ resubmit = false, onClose }) {
           idPhoto,
           selfie,
           consent: true,
+          termsAccepted: true,
+          finalConfirm: true,
+          termsVersion: TERMS_VERSION,
           ...(activeClaim
             ? { discountClaim: activeClaim, discountIdPhoto }
             : {}),
@@ -233,12 +256,16 @@ export default function SignupFlow({ resubmit = false, onClose }) {
         ? err.message.replace(/^API .* failed: /, "")
         : "";
       setError(msg || "Could not submit. Please try again.");
-      if (/username/i.test(msg)) setStepIndex(0);
+      if (/username/i.test(msg)) setStepIndex(steps.indexOf("details"));
     }
     setSubmitting(false);
   };
 
   const titles = {
+    terms: [
+      "Terms and Conditions",
+      "Please read these before you create an account.",
+    ],
     details: [
       "Your details",
       "Tell us who you are. Use the address that appears on your ID.",
@@ -255,7 +282,10 @@ export default function SignupFlow({ resubmit = false, onClose }) {
       "Selfie",
       "Take a selfie right now. Face the camera in good light, no mask or sunglasses.",
     ],
-    review: ["Review and submit", "Check your photos and agree to the terms."],
+    review: [
+      "Review and submit",
+      "Double-check your details and photos, then confirm.",
+    ],
   };
 
   const reviewPhotos = [
@@ -369,6 +399,80 @@ export default function SignupFlow({ resubmit = false, onClose }) {
             }}
           >
             {error}
+          </div>
+        )}
+
+        {step === "terms" && (
+          <div>
+            <div
+              ref={termsBox}
+              onScroll={checkTermsScrolled}
+              style={{
+                maxHeight: "42vh",
+                overflowY: "auto",
+                border: `1.5px solid ${C.border}`,
+                borderRadius: 12,
+                padding: "12px 14px",
+                background: C.surface,
+                fontFamily: IN,
+                fontSize: 12.5,
+                color: C.text,
+                lineHeight: 1.55,
+                marginBottom: 12,
+              }}
+            >
+              {TERMS_SECTIONS.map(([title, body]) => (
+                <div key={title} style={{ marginBottom: 12 }}>
+                  <div
+                    style={{
+                      fontFamily: GR,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      marginBottom: 2,
+                    }}
+                  >
+                    {title}
+                  </div>
+                  {body}
+                </div>
+              ))}
+            </div>
+            {!termsRead && (
+              <p
+                style={{
+                  fontFamily: IN,
+                  fontSize: 11.5,
+                  color: C.muted,
+                  margin: "0 0 10px",
+                }}
+              >
+                Scroll to the end of the terms to unlock the box below.
+              </p>
+            )}
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "flex-start",
+                fontFamily: IN,
+                fontSize: 12.5,
+                color: termsRead ? C.text : C.muted,
+                lineHeight: 1.5,
+                marginBottom: 16,
+                cursor: termsRead ? "pointer" : "not-allowed",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={termsAgree}
+                disabled={!termsRead}
+                onChange={(e) => setTermsAgree(e.target.checked)}
+                style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }}
+              />
+              <span>
+                I have read and I agree to the Terms and Conditions of Gravitry.
+              </span>
+            </label>
           </div>
         )}
 
@@ -621,6 +725,49 @@ export default function SignupFlow({ resubmit = false, onClose }) {
                 </>
               )}
             </div>
+            {!resubmit && (
+              <div
+                style={{
+                  border: `1.5px solid ${C.border}`,
+                  borderRadius: 12,
+                  padding: "12px 14px",
+                  marginBottom: 14,
+                  fontFamily: IN,
+                  fontSize: 12.5,
+                  color: C.text,
+                  lineHeight: 1.6,
+                }}
+              >
+                {[
+                  [
+                    "Name",
+                    [
+                      firstName.trim(),
+                      noMiddle ? "" : middleName.trim(),
+                      lastName.trim(),
+                      suffix.trim(),
+                    ]
+                      .filter(Boolean)
+                      .join(" "),
+                  ],
+                  [
+                    "Address",
+                    `${[phase && `Phase ${phase}`, block.trim() && `Block ${block.trim()} Lot ${lot.trim()}`].filter(Boolean).join(", ")}, Mary Cris Complex`,
+                  ],
+                  ["Phone", phone.trim() || "-"],
+                  ["Username", username.trim()],
+                  [
+                    "Discount",
+                    activeClaim ? `${discountName} (pending ID check)` : "None",
+                  ],
+                ].map(([k, v]) => (
+                  <div key={k} style={{ display: "flex", gap: 8 }}>
+                    <span style={{ color: C.muted, minWidth: 72 }}>{k}</span>
+                    <span style={{ fontWeight: 600 }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <label
               style={{
                 display: "flex",
@@ -645,6 +792,32 @@ export default function SignupFlow({ resubmit = false, onClose }) {
                 {activeClaim ? CONSENT_DISCOUNT_TEXT : ""}
               </span>
             </label>
+            {!resubmit && (
+              <label
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  alignItems: "flex-start",
+                  fontFamily: IN,
+                  fontSize: 12,
+                  color: C.text,
+                  lineHeight: 1.5,
+                  marginBottom: 16,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={finalConfirm}
+                  onChange={(e) => setFinalConfirm(e.target.checked)}
+                  style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }}
+                />
+                <span>
+                  Final check: I confirm that the details above are true and
+                  correct, and I agree once more to the Terms and Conditions.
+                </span>
+              </label>
+            )}
           </div>
         )}
 
