@@ -194,6 +194,20 @@ export const acceptViaNfc = (nfcId, origin) =>
 
 // -- Passenger verification (admin only) ----------------------------------------------------------------
 export const getVerifications = () => req("verifications");
+// Admin dashboard: user counts.
+export const getUserStats = () => req("verifications?action=stats");
+export const getSettings = () => req("verifications?action=settings");
+export const saveSettings = (seconds) =>
+  req("verifications?action=settings", {
+    method: "POST",
+    body: JSON.stringify({ seconds }),
+  });
+// Extend one pending passenger's temporary access: { seconds } or { until: "YYYY-MM-DD" }
+export const extendTempAccess = (id, body) =>
+  req(`verifications?id=${encodeURIComponent(id)}&action=extend`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 export const getVerificationPhotos = (id) =>
   req(`verifications?id=${encodeURIComponent(id)}`);
 // decision: "approve" | "reject"

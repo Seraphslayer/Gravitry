@@ -523,3 +523,9 @@ export function Logo({ size = 28, dark = false }) {
     </div>
   );
 }
+
+// ── Mary Cris Complex address choices (signup) ──────────────────────────────
+// An address is a Phase (1-12), or a Block and Lot, or both.
+export const MARY_CRIS_PHASES = Array.from({ length: 12 }, (_, i) =>
+  String(i + 1),
+);

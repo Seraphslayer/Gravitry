@@ -1,6 +1,7 @@
 import { getDb } from "./_db.js";
 import { getSessionFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
+import { getTempAccessSeconds, tempAccessDeadline } from "./_settings.js";
 import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
 
 // Policy switch: may a passenger whose account is still pending staff
@@ -174,12 +175,18 @@ export default async function handler(req, res) {
       let kioskClaim = null;
 
       if (session?.role === "passenger") {
-        const p = await db
-          .collection("passengers")
-          .findOne(
-            { _id: session.passengerId },
-            { projection: { status: 1, discountType: 1 } },
-          );
+        const p = await db.collection("passengers").findOne(
+          { _id: session.passengerId },
+          {
+            projection: {
+              status: 1,
+              discountType: 1,
+              verificationSubmittedAt: 1,
+              createdAt: 1,
+              tempAccessUntil: 1,
+            },
+          },
+        );
         if (!p) {
           return res.status(401).json({ error: "Account not found" });
         }
@@ -194,6 +201,17 @@ export default async function handler(req, res) {
           return res.status(403).json({
             error: "Your account is still waiting for TODA staff verification.",
           });
+        }
+        // Temporary access (not yet verified) only lasts so long; the admin
+        // length is set by the admin (Verify tab) and can be extended per account.
+        if (status === "pending") {
+          const until = tempAccessDeadline(p, await getTempAccessSeconds(db));
+          if (until && new Date(until) < new Date()) {
+            return res.status(403).json({
+              error:
+                "Your temporary access has expired. You can book rides again once TODA staff verify your account.",
+            });
+          }
         }
         identity = {
           passengerId: session.passengerId,

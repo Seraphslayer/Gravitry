@@ -29,6 +29,10 @@ import {
   releaseTricycle,
   getRequests,
   getVerifications,
+  getUserStats,
+  getSettings,
+  saveSettings,
+  extendTempAccess,
   getVerificationPhotos,
   reviewVerification,
 } from "./api.js";
@@ -2322,6 +2326,167 @@ function ReviewModal({ passenger, onClose, onDone }) {
   );
 }
 
+const DURATION_UNITS = [
+  ["seconds", 1],
+  ["minutes", 60],
+  ["hours", 3600],
+  ["days", 86400],
+];
+
+// Admin: how long a not-yet-verified passenger may keep booking rides.
+function TempAccessSettings() {
+  const [value, setValue] = useState("");
+  const [unit, setUnit] = useState(60);
+  const [saved, setSaved] = useState(null); // seconds
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        const secs = s.tempAccessSeconds;
+        // Show it in the biggest unit that divides evenly.
+        const u = [...DURATION_UNITS].reverse().find(([, m]) => secs % m === 0);
+        setUnit(u[1]);
+        setValue(String(secs / u[1]));
+        setSaved(secs);
+      })
+      .catch(() => {});
+  }, []);
+  const seconds = Math.round(Number(value) * unit);
+  const save = async () => {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = await saveSettings(seconds);
+      setSaved(r.tempAccessSeconds);
+      setMsg("Saved");
+    } catch (e) {
+      setMsg(cleanErr(e));
+    }
+    setBusy(false);
+  };
+  const disabled = busy || !value || !(seconds > 0) || seconds === saved;
+  return (
+    <div
+      style={{
+        padding: "12px 16px",
+        borderBottom: `1px solid ${C.border}`,
+        background: C.surface,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap",
+        fontFamily: IN,
+        fontSize: 12.5,
+        color: C.text,
+      }}
+    >
+      <span>
+        <b>Temporary access:</b> new accounts can book rides for
+      </span>
+      <input
+        type="number"
+        min="1"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        style={{ ...fieldStyle, width: 80 }}
+      />
+      <select
+        value={unit}
+        onChange={(e) => setUnit(Number(e.target.value))}
+        style={fieldStyle}
+      >
+        {DURATION_UNITS.map(([label, m]) => (
+          <option key={label} value={m}>
+            {label}
+          </option>
+        ))}
+      </select>
+      <span>while waiting for verification.</span>
+      <button
+        disabled={disabled}
+        onClick={save}
+        style={{ ...smallBtn(C.navy, "#fff"), opacity: disabled ? 0.5 : 1 }}
+      >
+        Save
+      </button>
+      {msg && <span style={{ color: C.muted }}>{msg}</span>}
+    </div>
+  );
+}
+
+// Per-passenger temporary access: shows the end time and lets staff extend it.
+function TempAccessControl({ p, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const until = p.tempAccessUntil ? new Date(p.tempAccessUntil) : null;
+  const expired = until && until < new Date();
+  const run = async (body) => {
+    setBusy(true);
+    setErr("");
+    try {
+      await extendTempAccess(p._id, body);
+      onChanged();
+    } catch (e) {
+      setErr(cleanErr(e));
+    }
+    setBusy(false);
+  };
+  const time = until
+    ? until.toLocaleTimeString("en-PH", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+    : "";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        flexWrap: "wrap",
+        marginTop: 4,
+        fontFamily: IN,
+        fontSize: 11.5,
+      }}
+    >
+      <span
+        style={{
+          color: expired ? "#B91C1C" : C.muted,
+          fontWeight: expired ? 700 : 400,
+        }}
+      >
+        {until
+          ? `${expired ? "Temporary access expired" : "Temporary access until"} ${time}`
+          : "No temporary access limit"}
+      </span>
+      <button
+        disabled={busy}
+        onClick={() => run({ seconds: 300 })}
+        style={smallBtn(C.surface, C.text)}
+      >
+        +5 min
+      </button>
+      <button
+        disabled={busy}
+        onClick={() => run({ seconds: 86400 })}
+        style={smallBtn(C.surface, C.text)}
+      >
+        +1 day
+      </button>
+      <input
+        type="date"
+        disabled={busy}
+        onChange={(e) => e.target.value && run({ until: e.target.value })}
+        title="Set an exact end date"
+        style={{ ...fieldStyle, padding: "3px 6px", fontSize: 11 }}
+      />
+      {err && <span style={{ color: "#B91C1C" }}>{err}</span>}
+    </div>
+  );
+}
+
 function VerifyTab({ items, loading, onChanged }) {
   const [reviewing, setReviewing] = useState(null);
   return (
@@ -2347,6 +2512,7 @@ function VerifyTab({ items, loading, onChanged }) {
           Accounts waiting for verification
         </span>
       </div>
+      <TempAccessSettings />
       {loading && (
         <p
           style={{
@@ -2415,6 +2581,7 @@ function VerifyTab({ items, loading, onChanged }) {
                 ? " . " + fmtTime(p.verificationSubmittedAt)
                 : ""}
             </div>
+            <TempAccessControl p={p} onChanged={onChanged} />
           </div>
           <button
             onClick={() => setReviewing(p)}
@@ -2454,6 +2621,7 @@ export default function AdminView() {
   const [tricycles, setTricycles] = useState([]);
   const [logs, setLogs] = useState([]);
   const [verifs, setVerifs] = useState([]);
+  const [userStats, setUserStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const loadAll = useCallback(async () => {
@@ -2473,6 +2641,11 @@ export default function AdminView() {
       setVerifs(await getVerifications());
     } catch {
       /* keep last known list */
+    }
+    try {
+      setUserStats(await getUserStats());
+    } catch {
+      /* keep last known counts */
     }
     setLoading(false);
   }, []);
@@ -2496,9 +2669,11 @@ export default function AdminView() {
     },
     { label: "Dispatch Log Entries", value: logs.length, sub: "all time" },
     {
-      label: "Terminal Coverage",
-      value: `${TERMINALS.length} / ${TERMINALS.length}`,
-      sub: "all active",
+      label: "Total Users",
+      value: userStats ? userStats.total : "-",
+      sub: userStats
+        ? `${userStats.passengers} passengers (${userStats.pending} unverified) · ${userStats.drivers} drivers`
+        : "loading...",
     },
   ];
 

@@ -102,28 +102,83 @@ export default async function handler(req, res) {
       const {
         username,
         password,
-        name,
+        firstName,
+        middleName,
+        lastName,
+        suffix,
+        noMiddleName,
+        phase,
+        block,
+        lot,
         phone,
-        address,
         idPhoto,
         selfie,
         consent,
         discountClaim,
         discountIdPhoto,
       } = req.body || {};
-      if (
-        !isNonEmptyString(username) ||
-        !isNonEmptyString(password) ||
-        !isNonEmptyString(name) ||
-        !isNonEmptyString(address)
-      ) {
+      const tidy = (v) => (typeof v === "string" ? v.trim() : "");
+      if (!isNonEmptyString(username) || !isNonEmptyString(password)) {
+        return res
+          .status(400)
+          .json({ error: "username and password are required" });
+      }
+      // Complete name: first + last are required; middle name is required
+      // unless the person says they have none.
+      if (!tidy(firstName) || !tidy(lastName)) {
+        return res
+          .status(400)
+          .json({
+            error: "Please enter your complete name (first and last name)",
+          });
+      }
+      if (noMiddleName !== true && !tidy(middleName)) {
         return res.status(400).json({
-          error: "username, password, name, and address are required",
+          error: "Please enter your middle name, or tick 'No middle name'",
         });
       }
+      const name = [
+        tidy(firstName),
+        noMiddleName === true ? "" : tidy(middleName),
+        tidy(lastName),
+        tidy(suffix),
+      ]
+        .filter(Boolean)
+        .join(" ");
+      // Only Mary Cris Complex residents can sign up. The address is a Phase
+      // (1-12), or a Block and Lot, or both (e.g. "Phase 3, Block 5 Lot 12").
+      const ph = tidy(phase);
+      const bl = tidy(block);
+      const lt = tidy(lot);
+      if (ph && !/^([1-9]|1[0-2])$/.test(ph)) {
+        return res.status(400).json({ error: "Phase must be from 1 to 12" });
+      }
+      const idPart = /^[0-9A-Za-z-]{1,6}$/;
+      if ((bl && !idPart.test(bl)) || (lt && !idPart.test(lt))) {
+        return res.status(400).json({ error: "Invalid block or lot" });
+      }
+      if (!!bl !== !!lt) {
+        return res
+          .status(400)
+          .json({ error: "Please give both your block and lot" });
+      }
+      if (!ph && !bl) {
+        return res.status(400).json({
+          error: "Please choose your phase, or enter your block and lot",
+        });
+      }
+      const addressParts = {
+        phase: ph || null,
+        block: bl || null,
+        lot: lt || null,
+      };
+      const address =
+        [ph && `Phase ${ph}`, bl && `Block ${bl} Lot ${lt}`]
+          .filter(Boolean)
+          .join(", ") + ", Mary Cris Complex";
       if (
         username.length > 40 ||
-        name.length > 100 ||
+        name.length > 120 ||
         address.length > 200 ||
         password.length > 200
       ) {
@@ -177,7 +232,14 @@ export default async function handler(req, res) {
         username: username.trim(),
         name: name.trim(),
         phone: phone ? phone.trim() : null,
-        address: address.trim(),
+        address,
+        addressParts,
+        nameParts: {
+          firstName: tidy(firstName),
+          middleName: noMiddleName === true ? "" : tidy(middleName),
+          lastName: tidy(lastName),
+          suffix: tidy(suffix),
+        },
         passwordHash: hashPassword(password),
         status: "pending",
         // discountClaim = what the passenger asked for; discountType = what
@@ -279,7 +341,7 @@ export default async function handler(req, res) {
             verificationSubmittedAt: nowIso,
             consentAt: nowIso,
           },
-          $unset: { rejectionReason: "" },
+          $unset: { rejectionReason: "", tempAccessUntil: "" },
         },
       );
       return res.status(200).json({ status: "pending" });
