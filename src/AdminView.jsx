@@ -16,6 +16,7 @@ import {
   pickupLabel,
   dropoffLabel,
   fmtKm,
+  useNotice,
 } from "./shared.jsx";
 import {
   getDrivers,
@@ -420,7 +421,7 @@ const EMPTY_DRIVER = {
 function AddDriverModal({ onClose, onDone }) {
   const [f, setF] = useState(EMPTY_DRIVER);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [err, setErr] = useNotice("");
   const [created, setCreated] = useState(null);
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
 
@@ -562,7 +563,7 @@ function ImportDriversModal({ onClose, onDone }) {
   const [rows, setRows] = useState(null); // parsed drivers, before sending
   const [fileName, setFileName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [err, setErr] = useNotice("");
   const [result, setResult] = useState(null);
 
   const pick = async (e) => {
@@ -1150,7 +1151,7 @@ const fieldStyle = {
 function RentalCell({ t, freeDrivers, onChanged }) {
   const [driverId, setDriverId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [err, setErr] = useNotice("");
 
   const run = async (fn) => {
     setBusy(true);
@@ -1305,7 +1306,7 @@ function AddTodaUnit({ onAdded }) {
   const [unit, setUnit] = useState("");
   const [plate, setPlate] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [err, setErr] = useNotice("");
 
   const save = async () => {
     setBusy(true);
@@ -1946,7 +1947,7 @@ function LogTab({ logs, loading }) {
 function ReviewModal({ passenger, onClose, onDone }) {
   const claim = passenger.discountClaim || null;
   const [photos, setPhotos] = useState(null);
-  const [error, setError] = useState(null);
+  const [error, setError] = useNotice(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2339,7 +2340,7 @@ function TempAccessSettings() {
   const [unit, setUnit] = useState(60);
   const [saved, setSaved] = useState(null); // seconds
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useNotice("");
   useEffect(() => {
     getSettings()
       .then((s) => {
@@ -2418,7 +2419,7 @@ function TempAccessSettings() {
 // Per-passenger temporary access: shows the end time and lets staff extend it.
 function TempAccessControl({ p, onChanged }) {
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [err, setErr] = useNotice("");
   const until = p.tempAccessUntil ? new Date(p.tempAccessUntil) : null;
   const expired = until && until < new Date();
   const run = async (body) => {

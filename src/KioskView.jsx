@@ -51,6 +51,7 @@ import {
   pickupLabel,
   dropoffLabel,
   fmtKm,
+  useNotice,
 } from "./shared.jsx";
 import {
   getQuote,
@@ -161,8 +162,8 @@ export default function KioskView() {
   const [showSettings, setShowSettings] = useState(false);
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-  const [nfcNotice, setNfcNotice] = useState(null); // { type: "success" | "error", text }
+  const [error, setError] = useNotice(null);
+  const [nfcNotice, setNfcNotice] = useNotice(null); // { type: "success" | "error", text }
   const [pendingQueue, setPendingQueue] = useState([]);
   const [showQueue, setShowQueue] = useState(false);
 
@@ -336,7 +337,6 @@ export default function KioskView() {
           err.message?.replace(/^API .* failed: /, "") || "Card not recognized",
       });
     }
-    setTimeout(() => setNfcNotice(null), 4000);
   };
 
   // Poll for driver acceptance while waiting. A kiosk ride is recorded as

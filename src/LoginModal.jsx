@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { Lock, User, LogIn } from "lucide-react";
-import { C, GR, IN, Logo } from "./shared.jsx";
+import { C, GR, IN, Logo, useNotice } from "./shared.jsx";
 import { useAuth } from "./AuthContext.jsx";
 
 export default function LoginModal({ role }) {
   const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState(null);
+  const [error, setError] = useNotice(null);
   const [submitting, setSubmitting] = useState(false);
 
   const label = role === "admin" ? "Admin Dashboard" : "Driver App";

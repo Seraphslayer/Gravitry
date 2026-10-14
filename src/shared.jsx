@@ -529,3 +529,22 @@ export function Logo({ size = 28, dark = false }) {
 export const MARY_CRIS_PHASES = Array.from({ length: 12 }, (_, i) =>
   String(i + 1),
 );
+
+// ── Notices that fade on their own ───────────────────────────────────────────
+// Like useState for a message (error / success banner), but the message clears
+// itself after a time that depends on its length: long enough to read, short
+// enough not to sit there stuck. Setting a new message restarts the timer.
+export function noticeMs(value) {
+  const text = typeof value === "string" ? value : (value && value.text) || "";
+  return Math.min(9000, Math.max(4000, 3000 + text.length * 55));
+}
+export function useNotice(initial = null) {
+  const [value, setValue] = useState(initial);
+  useEffect(() => {
+    if (!value) return undefined;
+    const t = setTimeout(() => setValue(initial), noticeMs(value));
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return [value, setValue];
+}

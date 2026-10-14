@@ -44,6 +44,7 @@ import {
   remainingAhead,
   useLiveRoute,
   FitTo,
+  useNotice,
 } from "./shared.jsx";
 import {
   getDrivers,
@@ -362,7 +363,7 @@ export default function DriverView() {
   const [arrivedTripId, setArrivedTripId] = useState(null); // passenger picked up
   const [trail, setTrail] = useState([]); // where the driver has driven this trip
   const [accepting, setAccepting] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useNotice(null);
 
   // Persistent "you are here" GPS dot - the driver always sees their own live
   // position on the map, together with the passenger's pickup point.

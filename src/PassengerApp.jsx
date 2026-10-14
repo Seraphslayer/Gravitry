@@ -64,6 +64,7 @@ import {
   FitTo,
   driverMarkerIcon,
   SmoothMarkers,
+  useNotice,
 } from "./shared.jsx";
 import {
   getQuote,
@@ -148,7 +149,7 @@ function AuthOverlay({ mode, onModeChange, onClose }) {
   const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState(null);
+  const [error, setError] = useNotice(null);
   const [submitting, setSubmitting] = useState(false);
 
   const handleLogin = async (e) => {
@@ -1087,7 +1088,7 @@ export default function PassengerApp() {
   const [trackInfo, setTrackInfo] = useState(null); // { request, driverLocation }
   const [trail, setTrail] = useState([]); // where the driver has driven with the passenger
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useNotice(null);
 
   // Persistent "you are here" GPS dot — always visible on the map, separate
   // from the one-shot "Use My Current Location" picker used to select a pickup.
