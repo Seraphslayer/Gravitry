@@ -566,7 +566,7 @@ export default function DriverView() {
         ? err.message.replace(/^API .* failed: /, "")
         : "";
       setError(
-        /NFC/i.test(msg)
+        /NFC|expired/i.test(msg)
           ? msg
           : "That request was just taken by another driver.",
       );
