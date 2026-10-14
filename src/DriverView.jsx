@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -6,6 +6,7 @@ import {
   Popup,
   Polyline,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 import {
   ArrowRight,
@@ -37,7 +38,13 @@ import {
   pinIcon,
   pickupPoint,
   dropoffPoint,
-  fetchRoute,
+  distanceMeters,
+  toLatLngs,
+  etaMinutes,
+  remainingAhead,
+  useRoute,
+  useLiveRoute,
+  FitTo,
 } from "./shared.jsx";
 import {
   getDrivers,
@@ -45,24 +52,13 @@ import {
   acceptRequest,
   completeRequest,
   sendPresence,
+  markPickedUp,
 } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 
 // Used as the driver's reference point when live GPS isn't available
 // (permission denied, no signal, desktop browser, etc).
 const HOME_TERMINAL = "T1"; // TODO: make this per-driver once terminals are assignable in the DB
-
-// Straight-line distance in meters between two lat/lng points.
-function distanceMeters(lat1, lng1, lat2, lng2) {
-  const R = 6371000;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 
 function fmtDistance(m) {
   if (m == null || !Number.isFinite(m)) return null;
@@ -79,54 +75,6 @@ const pickupIcon = pinIcon(C.green, false);
 const focusPickupIcon = pinIcon(C.green, true);
 const dropoffIcon = pinIcon(C.yellow, true);
 
-// Road route between two points, re-fetched only when the points really change.
-// Coordinates are rounded (about 100 m) so a moving GPS dot doesn't trigger a
-// new lookup on every tiny movement.
-function useRoute(a, b) {
-  const r3 = (n) => Math.round(n * 1000) / 1000;
-  const key =
-    a && b ? `${r3(a.lat)},${r3(a.lng)}|${r3(b.lat)},${r3(b.lng)}` : null;
-  const [route, setRoute] = useState(null);
-  useEffect(() => {
-    if (!key) {
-      setRoute(null);
-      return;
-    }
-    let cancelled = false;
-    fetchRoute(a, b).then((r) => {
-      if (!cancelled) setRoute(r);
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return route;
-}
-
-const toLatLngs = (coords) => coords.map(([lng, lat]) => [lat, lng]);
-
-// Zooms the map so the driver, the passenger's pickup point and the drop-off
-// all fit. Only runs when the focused ride changes (or the first GPS fix
-// arrives), so it never fights the driver while they pan around.
-function FitTo({ points, fitKey }) {
-  const map = useMap();
-  useEffect(() => {
-    const pts = points.filter(Boolean);
-    if (pts.length === 0) return;
-    if (pts.length === 1) {
-      map.flyTo([pts[0].lat, pts[0].lng], 17, { duration: 0.6 });
-    } else {
-      map.fitBounds(
-        pts.map((p) => [p.lat, p.lng]),
-        { padding: [60, 60], maxZoom: 17 },
-      );
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitKey, map]);
-  return null;
-}
-
 // "Center on me" button support.
 function Recenter({ position, tick }) {
   const map = useMap();
@@ -135,6 +83,22 @@ function Recenter({ position, tick }) {
       map.flyTo([position.lat, position.lng], 17, { duration: 0.6 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick, map]);
+  return null;
+}
+
+// Keeps the map centered on the driver as they move (until they drag the map).
+function FollowDriver({ position, enabled, onUserDrag }) {
+  const map = useMap();
+  useMapEvents({
+    dragstart() {
+      onUserDrag();
+    },
+  });
+  useEffect(() => {
+    if (enabled && position)
+      map.panTo([position.lat, position.lng], { animate: true, duration: 0.5 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [position?.lat, position?.lng, enabled, map]);
   return null;
 }
 
@@ -395,6 +359,9 @@ export default function DriverView() {
   const [activeTrip, setActiveTrip] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [recenterTick, setRecenterTick] = useState(0);
+  const [follow, setFollow] = useState(false); // map follows the driver
+  const [arrivedTripId, setArrivedTripId] = useState(null); // passenger picked up
+  const [trail, setTrail] = useState([]); // where the driver has driven this trip
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -435,12 +402,23 @@ export default function DriverView() {
   // Off duty. Sent right away whenever the Online / Offline switch changes,
   // then every 15 seconds while Online. If the app stops reporting (phone off,
   // no signal, tab closed) the server drops the driver to Off duty by itself.
+  // The driver's GPS position rides along with it, so the passenger being
+  // picked up can watch them arrive. While a trip is active it is sent every
+  // 4 seconds; otherwise every 15.
+  const posRef = useRef(null);
+  posRef.current = myPosition
+    ? { lat: myPosition.lat, lng: myPosition.lng }
+    : null;
+  const onTrip = !!activeTrip;
   useEffect(() => {
-    sendPresence(online).catch(() => {});
+    sendPresence(online, posRef.current).catch(() => {});
     if (!online) return;
-    const id = setInterval(() => sendPresence(true).catch(() => {}), 15000);
+    const id = setInterval(
+      () => sendPresence(true, posRef.current).catch(() => {}),
+      onTrip ? 4000 : 15000,
+    );
     return () => clearInterval(id);
-  }, [online]);
+  }, [online, onTrip]);
 
   // Closing or leaving the page counts as going offline right away.
   useEffect(() => {
@@ -500,9 +478,82 @@ export default function DriverView() {
     ? { lat: myPosition.lat, lng: myPosition.lng }
     : null;
 
-  // you -> passenger, and passenger -> drop-off
-  const toPickup = useRoute(driverPoint, focusPickup);
-  const tripRoute = useRoute(focusPickup, focusDropoff);
+  // Phase A: heading to the passenger. Phase B: passenger picked up, heading
+  // to the drop-off. Picked up = the driver reached the pickup point (within
+  // 50 m of it) or tapped "Passenger picked up".
+  // (pickedUpAt survives a page reload; arrivedTripId is the local flag.)
+  const phaseB =
+    !!activeTrip &&
+    (arrivedTripId === activeTrip._id || !!activeTrip.pickedUpAt);
+  const legTarget = phaseB ? focusDropoff : focusPickup;
+
+  // The line from the driver to wherever they are heading now. It follows the
+  // driver and shrinks as they get closer.
+  const liveRoute = useLiveRoute(driverPoint, legTarget);
+  const ahead =
+    liveRoute && driverPoint
+      ? remainingAhead(liveRoute.coords, driverPoint)
+      : null;
+
+  // Preview of the whole trip (pickup -> drop-off) while still heading to the
+  // passenger.
+  const tripPreview = useRoute(focusPickup, focusDropoff);
+
+  // Auto-detect pickup: close enough to the passenger's pickup point.
+  useEffect(() => {
+    if (!activeTrip || phaseB || !driverPoint || !focusPickup) return;
+    const d = distanceMeters(
+      driverPoint.lat,
+      driverPoint.lng,
+      focusPickup.lat,
+      focusPickup.lng,
+    );
+    if (d <= 50) setArrivedTripId(activeTrip._id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTrip?._id, phaseB, driverPoint?.lat, driverPoint?.lng]);
+
+  // Tell the server (and so the passenger's screen) the moment the passenger
+  // has been picked up.
+  useEffect(() => {
+    if (phaseB && activeTrip) markPickedUp(activeTrip._id).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phaseB, activeTrip?._id]);
+
+  // Trail of where the driver has actually driven since the pickup.
+  useEffect(() => {
+    if (!phaseB) {
+      setTrail([]);
+      return;
+    }
+    if (!driverPoint) return;
+    setTrail((t) => {
+      const lastPt = t[t.length - 1];
+      if (
+        lastPt &&
+        distanceMeters(lastPt[0], lastPt[1], driverPoint.lat, driverPoint.lng) <
+          10
+      )
+        return t;
+      return [...t.slice(-300), [driverPoint.lat, driverPoint.lng]];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phaseB, driverPoint?.lat, driverPoint?.lng]);
+
+  // The map follows the driver during a trip.
+  useEffect(() => {
+    setFollow(!!activeTrip);
+  }, [activeTrip?._id]);
+
+  // Text for the live chip on the map.
+  const nearDropoff = phaseB && ahead && ahead.meters < 40;
+  const chip = (() => {
+    if (!focusReq || !ahead) return null;
+    if (nearDropoff) return { text: "You've arrived at the drop-off" };
+    const who = phaseB ? "to drop-off" : "to passenger";
+    return {
+      text: `${fmtKm(ahead.meters)} ${who} · ~${etaMinutes(ahead.meters)} min`,
+    };
+  })();
 
   const handleAccept = async (req) => {
     setAccepting(true);
@@ -541,7 +592,7 @@ export default function DriverView() {
     logout();
   };
 
-  const fitKey = `${focusReq?._id || "none"}|${!!myPosition}`;
+  const fitKey = `${focusReq?._id || "none"}|${!!myPosition}|${phaseB}`;
   const activePickup = activeTrip ? pickupPoint(activeTrip) : null;
   const activeDropoff = activeTrip ? dropoffPoint(activeTrip) : null;
 
@@ -561,6 +612,11 @@ export default function DriverView() {
             fitKey={fitKey}
           />
           <Recenter position={myPosition} tick={recenterTick} />
+          <FollowDriver
+            position={myPosition}
+            enabled={follow}
+            onUserDrag={() => setFollow(false)}
+          />
 
           {TERMINALS.map((t) => (
             <Marker key={t.id} position={[t.lat, t.lng]} icon={terminalIcon}>
@@ -568,23 +624,35 @@ export default function DriverView() {
             </Marker>
           ))}
 
-          {/* trip route: passenger -> drop-off (dashed green) */}
-          {tripRoute && (
+          {/* whole trip preview while still heading to the passenger */}
+          {!phaseB && tripPreview && (
             <Polyline
-              positions={toLatLngs(tripRoute.coords)}
+              positions={toLatLngs(tripPreview.coords)}
               pathOptions={{
                 color: C.green,
-                weight: 5,
-                opacity: 0.75,
+                weight: 4,
+                opacity: 0.45,
                 dashArray: "8 8",
               }}
             />
           )}
-          {/* your route to the passenger (solid navy) */}
-          {toPickup && (
+          {/* where the driver has driven since picking up the passenger */}
+          {phaseB && trail.length > 1 && (
             <Polyline
-              positions={toLatLngs(toPickup.coords)}
-              pathOptions={{ color: C.navy, weight: 5, opacity: 0.85 }}
+              positions={trail}
+              pathOptions={{ color: "#9CA3AF", weight: 5, opacity: 0.9 }}
+            />
+          )}
+          {/* live line from the driver to where they are heading now: it
+              starts at the driver dot and shrinks as they get closer */}
+          {ahead && (
+            <Polyline
+              positions={ahead.line}
+              pathOptions={{
+                color: phaseB ? C.green : C.navy,
+                weight: 6,
+                opacity: 0.9,
+              }}
             />
           )}
 
@@ -727,8 +795,36 @@ export default function DriverView() {
           </button>
         </div>
 
+        {chip && (
+          <div
+            style={{
+              position: "absolute",
+              top: "calc(60px + var(--safe-top))",
+              left: 12,
+              zIndex: 400,
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              background: nearDropoff ? C.green : "rgba(255,255,255,0.96)",
+              color: nearDropoff ? "#fff" : C.text,
+              padding: "8px 14px",
+              borderRadius: 20,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 12.5,
+            }}
+          >
+            <Navigation size={14} color={nearDropoff ? "#fff" : C.green} />
+            {chip.text}
+          </div>
+        )}
+
         <button
-          onClick={() => setRecenterTick((n) => n + 1)}
+          onClick={() => {
+            setFollow(true);
+            setRecenterTick((n) => n + 1);
+          }}
           disabled={!myPosition}
           title="Center the map on my location"
           style={{
@@ -739,7 +835,7 @@ export default function DriverView() {
             width: 38,
             height: 38,
             borderRadius: "50%",
-            background: "rgba(255,255,255,0.95)",
+            background: follow ? C.navy : "rgba(255,255,255,0.95)",
             border: "none",
             display: "flex",
             alignItems: "center",
@@ -749,7 +845,7 @@ export default function DriverView() {
             opacity: myPosition ? 1 : 0.5,
           }}
         >
-          <LocateFixed size={17} color={C.navy} />
+          <LocateFixed size={17} color={follow ? C.yellow : C.navy} />
         </button>
 
         {activeTrip && (
@@ -1006,6 +1102,26 @@ export default function DriverView() {
                 </a>
               )}
             </div>
+            {!phaseB && (
+              <button
+                onClick={() => setArrivedTripId(activeTrip._id)}
+                style={{
+                  width: "100%",
+                  marginBottom: 14,
+                  background: "transparent",
+                  color: C.yellow,
+                  border: `1.5px solid ${C.yellow}`,
+                  borderRadius: 10,
+                  padding: "10px 0",
+                  fontFamily: GR,
+                  fontWeight: 700,
+                  fontSize: 12.5,
+                  cursor: "pointer",
+                }}
+              >
+                Passenger picked up
+              </button>
+            )}
             {(activeTrip.passengerName || activeTrip.distanceMeters) && (
               <div
                 style={{
