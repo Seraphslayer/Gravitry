@@ -60,7 +60,6 @@ import {
   toLatLngs,
   etaMinutes,
   remainingAhead,
-  useRoute,
   useLiveRoute,
   FitTo,
   driverMarkerIcon,
@@ -1258,10 +1257,6 @@ export default function PassengerApp() {
     liveRoute && driverPoint
       ? remainingAhead(liveRoute.coords, driverPoint)
       : null;
-  const tripPreview = useRoute(
-    tracking && !pickedUp ? pickup : null,
-    tracking && !pickedUp ? dropoff : null,
-  );
   const driverArrived = tracking && !pickedUp && !!ahead && ahead.meters < 50;
   const nearDropoff = tracking && pickedUp && !!ahead && ahead.meters < 40;
 
@@ -1506,21 +1501,13 @@ export default function PassengerApp() {
             <>
               <SmoothMarkers />
               <FitTo
-                points={[driverPoint, pickedUp ? null : pickup, dropoff]}
+                points={[
+                  driverPoint,
+                  pickedUp ? null : pickup,
+                  pickedUp ? dropoff : null,
+                ]}
                 fitKey={`${!!driverPoint}|${pickedUp}`}
               />
-              {/* the whole trip, faint, while the driver is still coming */}
-              {!pickedUp && tripPreview && (
-                <Polyline
-                  positions={toLatLngs(tripPreview.coords)}
-                  pathOptions={{
-                    color: C.green,
-                    weight: 4,
-                    opacity: 0.45,
-                    dashArray: "8 8",
-                  }}
-                />
-              )}
               {/* where the driver has driven with you */}
               {pickedUp && trail.length > 1 && (
                 <Polyline

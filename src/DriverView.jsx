@@ -42,7 +42,6 @@ import {
   toLatLngs,
   etaMinutes,
   remainingAhead,
-  useRoute,
   useLiveRoute,
   FitTo,
 } from "./shared.jsx";
@@ -495,10 +494,6 @@ export default function DriverView() {
       ? remainingAhead(liveRoute.coords, driverPoint)
       : null;
 
-  // Preview of the whole trip (pickup -> drop-off) while still heading to the
-  // passenger.
-  const tripPreview = useRoute(focusPickup, focusDropoff);
-
   // Auto-detect pickup: close enough to the passenger's pickup point.
   useEffect(() => {
     if (!activeTrip || phaseB || !driverPoint || !focusPickup) return;
@@ -624,18 +619,6 @@ export default function DriverView() {
             </Marker>
           ))}
 
-          {/* whole trip preview while still heading to the passenger */}
-          {!phaseB && tripPreview && (
-            <Polyline
-              positions={toLatLngs(tripPreview.coords)}
-              pathOptions={{
-                color: C.green,
-                weight: 4,
-                opacity: 0.45,
-                dashArray: "8 8",
-              }}
-            />
-          )}
           {/* where the driver has driven since picking up the passenger */}
           {phaseB && trail.length > 1 && (
             <Polyline
