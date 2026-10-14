@@ -168,6 +168,13 @@ export const completeRequest = (id) =>
 
 // Passenger: the request plus the driver's live position while the driver is
 // on the way. -> { request, driverLocation: { lat, lng, at } | null }
+// Passenger: rate a completed ride (1-5 stars, optional comment). Once only.
+export const rateRequest = (id, stars, comment) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=rate`, {
+    method: "POST",
+    body: JSON.stringify({ stars, comment }),
+  });
+
 export const trackRequest = (id) =>
   req(`requests?id=${encodeURIComponent(id)}&action=track`);
 

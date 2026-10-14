@@ -32,6 +32,7 @@ import {
   BadgePercent,
   Route,
   Navigation,
+  Star,
 } from "lucide-react";
 import {
   C,
@@ -70,6 +71,7 @@ import {
   getQuote,
   createRequest,
   cancelRequest,
+  rateRequest,
   getRequestById,
   getRequests,
   trackRequest,
@@ -368,6 +370,197 @@ function statusColor(s) {
   return { bg: "#FEF3C7", fg: "#92400E", label: "Pending" };
 }
 
+// Star rating for a completed ride. Shows the saved rating if there is one,
+// otherwise lets the passenger pick 1-5 stars (and write a short comment).
+// compact = true: a small "Rate this ride" line that opens on tap (history).
+function RatingBox({ ride, compact = false, onRated }) {
+  const [saved, setSaved] = useState(ride.rating || null);
+  const [stars, setStars] = useState(0);
+  const [hover, setHover] = useState(0);
+  const [comment, setComment] = useState("");
+  const [open, setOpen] = useState(!compact);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useNotice("");
+
+  const row = (value, size, onPick) => (
+    <div style={{ display: "flex", gap: 4 }}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          disabled={!onPick}
+          onClick={() => onPick && onPick(n)}
+          onMouseEnter={() => onPick && setHover(n)}
+          onMouseLeave={() => onPick && setHover(0)}
+          aria-label={`${n} star${n === 1 ? "" : "s"}`}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 2,
+            cursor: onPick ? "pointer" : "default",
+          }}
+        >
+          <Star
+            size={size}
+            color={C.yellow}
+            fill={n <= value ? C.yellow : "none"}
+          />
+        </button>
+      ))}
+    </div>
+  );
+
+  if (saved) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontFamily: IN,
+          fontSize: 12,
+          color: C.muted,
+        }}
+      >
+        {row(saved.stars, compact ? 14 : 18, null)}
+        <span>
+          You rated this ride{saved.comment ? `: "${saved.comment}"` : ""}
+        </span>
+      </div>
+    );
+  }
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          color: C.navy,
+          fontFamily: GR,
+          fontWeight: 700,
+          fontSize: 12,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+        }}
+      >
+        <Star size={13} color={C.yellow} fill={C.yellow} /> Rate this ride
+      </button>
+    );
+  }
+
+  const submit = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const doc = await rateRequest(ride._id, stars, comment.trim());
+      setSaved(doc.rating);
+      if (onRated) onRated(doc);
+    } catch (e) {
+      setErr(
+        String(e.message || e).replace(/^API [^:]*failed: /, "") ||
+          "Could not save your rating.",
+      );
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div
+      style={{
+        background: C.white,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        padding: "14px 16px",
+        textAlign: "center",
+      }}
+    >
+      <div
+        style={{
+          fontFamily: GR,
+          fontWeight: 700,
+          fontSize: 14,
+          color: C.text,
+          marginBottom: 2,
+        }}
+      >
+        How was your ride{ride.driver ? ` with ${ride.driver}` : ""}?
+      </div>
+      <div
+        style={{
+          fontFamily: IN,
+          fontSize: 11.5,
+          color: C.muted,
+          marginBottom: 8,
+        }}
+      >
+        Your rating helps keep our drivers accountable.
+      </div>
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        {row(hover || stars, 30, setStars)}
+      </div>
+      {stars > 0 && (
+        <>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            maxLength={300}
+            rows={2}
+            placeholder="Add a comment (optional)"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              marginTop: 10,
+              padding: "10px 12px",
+              borderRadius: 10,
+              border: `1.5px solid ${C.border}`,
+              fontFamily: IN,
+              fontSize: 13,
+              resize: "none",
+              outline: "none",
+            }}
+          />
+          <button
+            onClick={submit}
+            disabled={busy}
+            style={{
+              marginTop: 10,
+              width: "100%",
+              padding: "12px 0",
+              background: C.navy,
+              color: "#fff",
+              border: "none",
+              borderRadius: 12,
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 13.5,
+              cursor: "pointer",
+              opacity: busy ? 0.6 : 1,
+            }}
+          >
+            {busy ? "Sending..." : "Submit rating"}
+          </button>
+        </>
+      )}
+      {err && (
+        <div
+          style={{
+            color: "#B91C1C",
+            fontFamily: IN,
+            fontSize: 12,
+            marginTop: 8,
+          }}
+        >
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HistoryTab({ passengerId }) {
   const [rides, setRides] = useState(null);
 
@@ -505,6 +698,11 @@ function HistoryTab({ passengerId }) {
                 ₱{r.fare}.00
               </span>
             </div>
+            {r.status === "completed" && r.driverId && (
+              <div style={{ marginTop: 8 }}>
+                <RatingBox ride={r} compact />
+              </div>
+            )}
           </div>
         );
       })}
@@ -2521,6 +2719,15 @@ export default function PassengerApp() {
                         </span>
                       </div>
                     </div>
+                    {isPassenger &&
+                      record.passengerId &&
+                      record.driverId &&
+                      record.status === "completed" &&
+                      !record.recordedViaNfc && (
+                        <div style={{ marginTop: 12 }}>
+                          <RatingBox ride={record} />
+                        </div>
+                      )}
                     <button
                       onClick={resetFlow}
                       style={{

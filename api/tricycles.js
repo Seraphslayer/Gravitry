@@ -28,7 +28,11 @@ function todayManila() {
 }
 
 function isIsoDate(s) {
-  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(new Date(s));
+  return (
+    typeof s === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(s) &&
+    !isNaN(new Date(s))
+  );
 }
 
 // startedAt + n months, always counted from the START date (not from the last
@@ -158,7 +162,7 @@ export default async function handler(req, res) {
           },
           { returnDocument: "after" },
         );
-        const doc = result.value ?? result;
+        const doc = result?.value ?? result;
         if (!doc) {
           return res.status(409).json({ error: "This unit was just rented" });
         }
@@ -188,7 +192,7 @@ export default async function handler(req, res) {
           },
           { returnDocument: "after" },
         );
-        const doc = result.value ?? result;
+        const doc = result?.value ?? result;
         if (!doc) {
           return res
             .status(409)
@@ -230,7 +234,7 @@ export default async function handler(req, res) {
           },
           { returnDocument: "after" },
         );
-        const doc = result.value ?? result;
+        const doc = result?.value ?? result;
         if (!doc) {
           return res.status(409).json({
             error: "Couldn't end the rental. Refresh and try again.",

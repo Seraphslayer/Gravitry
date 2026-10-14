@@ -379,7 +379,7 @@ export default async function handler(req, res) {
         { $set: update },
         { returnDocument: "after" },
       );
-      const doc = result.value ?? result;
+      const doc = result?.value ?? result;
       if (!doc)
         return res
           .status(409)
@@ -401,6 +401,9 @@ export default async function handler(req, res) {
 
       // Trip is already on record: the driver stays available and their
       // tricycle is now listed at the drop-off terminal.
+      await db
+        .collection("drivers")
+        .updateOne({ _id: driver._id }, { $inc: { tripsCompleted: 1 } });
       await db
         .collection("tricycles")
         .updateOne(
@@ -488,7 +491,7 @@ export default async function handler(req, res) {
         { $set: { pickedUpAt: new Date().toISOString() } },
         { returnDocument: "after" },
       );
-      const doc = result.value ?? result;
+      const doc = result?.value ?? result;
       if (!doc)
         return res
           .status(404)
@@ -539,7 +542,7 @@ export default async function handler(req, res) {
         { $set: update },
         { returnDocument: "after" },
       );
-      const doc = result.value ?? result;
+      const doc = result?.value ?? result;
       if (!doc)
         return res
           .status(409)
@@ -584,9 +587,72 @@ export default async function handler(req, res) {
         },
         { returnDocument: "after" },
       );
-      const doc = result.value ?? result;
+      const doc = result?.value ?? result;
       if (!doc)
         return res.status(409).json({ error: "Request was just accepted" });
+      return res.status(200).json(doc);
+    }
+
+    // POST /api/requests?id=DR-001&action=rate  { stars: 1-5, comment? }
+    // The passenger who took a completed ride rates it, once. The driver's
+    // rating becomes the average of all their rated rides.
+    if (req.method === "POST" && id && action === "rate") {
+      const session = requireSession(req, res, ["passenger"]);
+      if (!session) return;
+      const stars = Number(req.body?.stars);
+      if (!Number.isInteger(stars) || stars < 1 || stars > 5)
+        return res.status(400).json({ error: "Rating must be 1 to 5 stars" });
+      const rawComment = req.body?.comment;
+      if (rawComment != null && typeof rawComment !== "string")
+        return res.status(400).json({ error: "Invalid comment" });
+      const comment = (rawComment || "").trim().slice(0, 300);
+
+      const target = await col.findOne({ _id: id });
+      if (!target || target.passengerId !== session.passengerId)
+        return res.status(404).json({ error: "Ride not found" });
+      if (target.status !== "completed")
+        return res
+          .status(409)
+          .json({ error: "You can rate a ride once it is completed" });
+      if (!target.driverId)
+        return res
+          .status(409)
+          .json({ error: "This ride has no driver to rate" });
+
+      // Only the first rating counts (the filter makes this safe against a
+      // double tap).
+      const result = await col.findOneAndUpdate(
+        { _id: id, rating: { $exists: false } },
+        {
+          $set: {
+            rating: { stars, comment, at: new Date().toISOString() },
+          },
+        },
+        { returnDocument: "after" },
+      );
+      const doc = result?.value ?? result;
+      if (!doc)
+        return res.status(409).json({ error: "You already rated this ride" });
+
+      const drivers = db.collection("drivers");
+      await drivers.updateOne(
+        { _id: target.driverId },
+        { $inc: { ratingSum: stars, ratingCount: 1 } },
+      );
+      const d = await drivers.findOne(
+        { _id: target.driverId },
+        { projection: { ratingSum: 1, ratingCount: 1 } },
+      );
+      if (d?.ratingCount) {
+        await drivers.updateOne(
+          { _id: target.driverId },
+          {
+            $set: {
+              rating: Math.round((d.ratingSum / d.ratingCount) * 10) / 10,
+            },
+          },
+        );
+      }
       return res.status(200).json(doc);
     }
 
@@ -609,7 +675,7 @@ export default async function handler(req, res) {
         },
         { returnDocument: "after" },
       );
-      const doc = result.value ?? result;
+      const doc = result?.value ?? result;
       if (!doc)
         return res
           .status(404)
@@ -618,7 +684,10 @@ export default async function handler(req, res) {
       if (doc.driverId) {
         await db
           .collection("drivers")
-          .updateOne({ _id: doc.driverId }, { $set: { status: "available" } });
+          .updateOne(
+            { _id: doc.driverId },
+            { $set: { status: "available" }, $inc: { tripsCompleted: 1 } },
+          );
         await db
           .collection("tricycles")
           .updateOne(
