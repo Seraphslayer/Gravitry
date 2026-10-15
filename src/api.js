@@ -223,3 +223,16 @@ export const reviewVerification = (id, decision, reason, discountType) =>
       decision === "reject" ? { reason } : discountType ? { discountType } : {},
     ),
   });
+
+// -- SOS and incident reports ----------------------------------------------------------------
+// data: { kind: "sos" | "incident", category?, description?, requestId?, lat?, lng? }
+export const createReport = (data) =>
+  req("reports?action=create", { method: "POST", body: JSON.stringify(data) });
+// Admin
+export const getReports = () => req("reports");
+// action: "ack" | "resolve"
+export const updateReport = (id, action, note) =>
+  req(`reports?id=${encodeURIComponent(id)}&action=${action}`, {
+    method: "POST",
+    body: JSON.stringify({ note: note || "" }),
+  });

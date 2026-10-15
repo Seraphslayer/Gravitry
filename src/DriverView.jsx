@@ -55,6 +55,7 @@ import {
   markPickedUp,
 } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
+import IncidentButton from "./IncidentReport.jsx";
 
 // Used as the driver's reference point when live GPS isn't available
 // (permission denied, no signal, desktop browser, etc).
@@ -778,6 +779,14 @@ export default function DriverView() {
             <LogOut size={14} color={C.muted} />
           </button>
         </div>
+
+        {online && (
+          <IncidentButton
+            role="driver"
+            rideId={activeTrip?._id}
+            style={{ top: "calc(106px + var(--safe-top))", right: 12 }}
+          />
+        )}
 
         {chip && (
           <div

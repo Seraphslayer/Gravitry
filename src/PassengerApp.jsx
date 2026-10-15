@@ -78,6 +78,7 @@ import {
 } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import SignupFlow from "./SignupFlow.jsx";
+import IncidentButton from "./IncidentReport.jsx";
 
 const terminalIcon = pinIcon(C.navy, false);
 const pickupIcon = pinIcon(C.green, true);
@@ -1757,6 +1758,14 @@ export default function PassengerApp() {
             </Marker>
           )}
         </MapContainer>
+
+        {tracking && (
+          <IncidentButton
+            role="passenger"
+            rideId={myRequestId}
+            style={{ top: "calc(60px + var(--safe-top))", right: 12 }}
+          />
+        )}
 
         {tracking && (
           <div

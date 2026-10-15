@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Truck, Star, Wifi, X } from "lucide-react";
 import {
   C,
@@ -31,6 +31,8 @@ import {
   getRequests,
   getVerifications,
   getUserStats,
+  getReports,
+  updateReport,
   getPassengers,
   setTimeLeft,
   getVerificationPhotos,
@@ -1718,6 +1720,271 @@ function TariffTab() {
   );
 }
 
+function beep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    [0, 0.25, 0.5].forEach((t) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = 880;
+      g.gain.value = 0.15;
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start(ctx.currentTime + t);
+      o.stop(ctx.currentTime + t + 0.18);
+    });
+  } catch {
+    /* audio not allowed */
+  }
+}
+
+function IncidentsTab({ items, loading, onChanged }) {
+  const [err, setErr] = useNotice("");
+  const [notes, setNotes] = useState({});
+  const [busy, setBusy] = useState("");
+  const [filter, setFilter] = useState("open");
+
+  const shown = items.filter((x) =>
+    filter === "all"
+      ? true
+      : filter === "open"
+        ? x.status !== "resolved"
+        : x.status === "resolved",
+  );
+
+  const act = async (id, action) => {
+    setBusy(id + action);
+    try {
+      await updateReport(id, action, notes[id] || "");
+      onChanged();
+    } catch (e) {
+      setErr(e.message || "Failed");
+    }
+    setBusy("");
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {[
+          ["open", "Open"],
+          ["resolved", "Resolved"],
+          ["all", "All"],
+        ].map(([k, l]) => (
+          <button
+            key={k}
+            onClick={() => setFilter(k)}
+            style={{
+              padding: "6px 14px",
+              borderRadius: 20,
+              border: `1px solid ${C.border}`,
+              background: filter === k ? C.navy : C.white,
+              color: filter === k ? "#fff" : C.text,
+              fontFamily: GR,
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {l}
+          </button>
+        ))}
+      </div>
+      {err && (
+        <div
+          style={{
+            color: "#B91C1C",
+            fontFamily: GR,
+            fontSize: 13,
+            marginBottom: 10,
+          }}
+        >
+          {err}
+        </div>
+      )}
+      {loading && (
+        <div style={{ fontFamily: GR, color: C.muted }}>Loading...</div>
+      )}
+      {!loading && shown.length === 0 && (
+        <div
+          style={{
+            fontFamily: GR,
+            color: C.muted,
+            padding: 24,
+            textAlign: "center",
+          }}
+        >
+          No reports here.
+        </div>
+      )}
+      {shown.map((r) => {
+        const sos = r.kind === "sos";
+        return (
+          <div
+            key={r._id}
+            style={{
+              background: C.white,
+              border: `1px solid ${sos && r.status === "open" ? "#DC2626" : C.border}`,
+              borderLeft: `5px solid ${sos ? "#DC2626" : "#F59E0B"}`,
+              borderRadius: 12,
+              padding: 14,
+              marginBottom: 12,
+              fontFamily: GR,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <b style={{ fontSize: 14, color: C.text }}>{r._id}</b>
+              <Badge variant={sos ? "red" : "yellow"}>{r.categoryLabel}</Badge>
+              <Badge
+                variant={
+                  r.status === "open"
+                    ? "red"
+                    : r.status === "acknowledged"
+                      ? "blue"
+                      : "green"
+                }
+              >
+                {r.status}
+              </Badge>
+              <span
+                style={{ marginLeft: "auto", fontSize: 11.5, color: C.muted }}
+              >
+                {new Date(r.ts).toLocaleString()}
+              </span>
+            </div>
+            <div style={{ fontSize: 13, color: C.text, marginTop: 8 }}>
+              <b>{r.reporter?.name || "Unknown"}</b> ({r.reporter?.role})
+              {r.reporter?.phone && (
+                <>
+                  {" · "}
+                  <a
+                    href={`tel:${r.reporter.phone}`}
+                    style={{ color: C.navy, fontWeight: 700 }}
+                  >
+                    {r.reporter.phone}
+                  </a>
+                </>
+              )}
+              {r.reporter?.unit && <> · Unit {r.reporter.unit}</>}
+              {r.reporter?.plate && <> · {r.reporter.plate}</>}
+            </div>
+            {r.description && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: C.text,
+                  marginTop: 6,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {r.description}
+              </div>
+            )}
+            {r.ride && (
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+                Ride {r.ride.id} ({r.ride.status}) · Driver:{" "}
+                {r.ride.driver || "-"} {r.ride.unit || ""} · Passenger:{" "}
+                {r.ride.passengerName || "-"} · {r.ride.pickup || "?"} →{" "}
+                {r.ride.dropoff || "?"}
+              </div>
+            )}
+            <div style={{ fontSize: 12, marginTop: 6 }}>
+              {r.location ? (
+                <a
+                  href={`https://www.openstreetmap.org/?mlat=${r.location.lat}&mlon=${r.location.lng}#map=18/${r.location.lat}/${r.location.lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: C.navy, fontWeight: 700 }}
+                >
+                  View location on map
+                </a>
+              ) : (
+                <span style={{ color: C.muted }}>No location shared</span>
+              )}
+            </div>
+            {r.resolutionNote && (
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+                Note: {r.resolutionNote}
+              </div>
+            )}
+            {r.status !== "resolved" && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  marginTop: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <input
+                  value={notes[r._id] || ""}
+                  maxLength={400}
+                  onChange={(e) =>
+                    setNotes({ ...notes, [r._id]: e.target.value })
+                  }
+                  placeholder="Note (optional)"
+                  style={{
+                    flex: "1 1 160px",
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: `1px solid ${C.border}`,
+                    fontFamily: GR,
+                    fontSize: 13,
+                  }}
+                />
+                {r.status === "open" && (
+                  <button
+                    disabled={!!busy}
+                    onClick={() => act(r._id, "ack")}
+                    style={{
+                      padding: "8px 14px",
+                      borderRadius: 8,
+                      border: `1px solid ${C.navy}`,
+                      background: C.white,
+                      color: C.navy,
+                      fontFamily: GR,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Acknowledge
+                  </button>
+                )}
+                <button
+                  disabled={!!busy}
+                  onClick={() => act(r._id, "resolve")}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 8,
+                    border: "none",
+                    background: C.navy,
+                    color: "#fff",
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  Resolve
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function LogTab({ logs, loading }) {
   return (
     <div
@@ -2462,6 +2729,23 @@ function UsersTab() {
     } catch {
       /* keep last known list */
     }
+    try {
+      const r = await getReports();
+      setReports(r);
+      // Beep once for each new open SOS (browsers may block it until the page is clicked).
+      const fresh = r.filter(
+        (x) =>
+          x.kind === "sos" &&
+          x.status === "open" &&
+          !seenSos.current.has(x._id),
+      );
+      const first = seenSos.current.size === 0 && !seenSos.current.__init;
+      fresh.forEach((x) => seenSos.current.add(x._id));
+      seenSos.current.__init = true;
+      if (fresh.length && !first) beep();
+    } catch {
+      /* keep last known reports */
+    }
     setLoading(false);
   }, []);
   useEffect(() => {
@@ -2889,6 +3173,8 @@ export default function AdminView() {
   const [logs, setLogs] = useState([]);
   const [verifs, setVerifs] = useState([]);
   const [userStats, setUserStats] = useState(null);
+  const [reports, setReports] = useState([]);
+  const seenSos = useRef(new Set());
   const [loading, setLoading] = useState(true);
 
   const loadAll = useCallback(async () => {
@@ -2922,6 +3208,8 @@ export default function AdminView() {
     const id = setInterval(loadAll, 8000);
     return () => clearInterval(id);
   }, [loadAll]);
+
+  const openReports = reports.filter((x) => x.status === "open").length;
 
   const stats = [
     {
@@ -3055,6 +3343,7 @@ export default function AdminView() {
             ["fares", "Tariff"],
             ["users", "Users"],
             ["verify", "Verify"],
+            ["incidents", "Incidents"],
             ["log", "Log"],
           ].map(([key, label]) => (
             <button
@@ -3077,6 +3366,20 @@ export default function AdminView() {
               }}
             >
               {label}
+              {key === "incidents" && openReports > 0 && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    background: "#DC2626",
+                    color: "#fff",
+                    borderRadius: 10,
+                    padding: "1px 7px",
+                    fontSize: 10.5,
+                  }}
+                >
+                  {openReports}
+                </span>
+              )}
               {key === "verify" && verifs.length > 0 && (
                 <span
                   style={{
@@ -3110,6 +3413,9 @@ export default function AdminView() {
         {tab === "users" && <UsersTab />}
         {tab === "verify" && (
           <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
+        )}
+        {tab === "incidents" && (
+          <IncidentsTab items={reports} loading={loading} onChanged={loadAll} />
         )}
         {tab === "log" && <LogTab logs={logs} loading={loading} />}
       </div>
