@@ -39,7 +39,6 @@ import {
   pickupPoint,
   dropoffPoint,
   distanceMeters,
-  toLatLngs,
   etaMinutes,
   remainingAhead,
   useLiveRoute,

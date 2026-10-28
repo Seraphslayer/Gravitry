@@ -35,6 +35,19 @@ const m1 = (v, c) =>
 const match = (d, q) =>
   (q.$or ? q.$or.some((s) => match(d, s)) : true) &&
   Object.entries(q).every(([k, v]) => k === "$or" || m1(v, get(d, k)));
+// Like Mongo's projection: { a: 0 } hides fields, { a: 1 } keeps only those.
+const project = (d, p) => {
+  if (!d || !p) return d;
+  const keys = Object.keys(p).filter((k) => k !== "_id");
+  if (keys.length && keys.every((k) => p[k])) {
+    const out = { _id: d._id };
+    for (const k of keys) if (k in d) out[k] = d[k];
+    return out;
+  }
+  const out = { ...d };
+  for (const k of keys) if (!p[k]) delete out[k];
+  return out;
+};
 const apply = (d, u) => {
   Object.assign(d, u.$set || {});
   for (const k of Object.keys(u.$unset || {})) delete d[k];
@@ -55,9 +68,9 @@ export function createFakeDb() {
     findOne: async (q = {}, o) => {
       const rows = T(n).filter((d) => match(d, q));
       if (o?.sort) rows.sort(sorter(o.sort));
-      return rows[0] || null;
+      return project(rows[0], o?.projection) || null;
     },
-    find: (q = {}) => {
+    find: (q = {}, fo) => {
       let rows = T(n).filter((d) => match(d, q));
       const c = {
         sort(s) {
@@ -68,7 +81,7 @@ export function createFakeDb() {
           rows = rows.slice(0, k);
           return c;
         },
-        toArray: async () => rows,
+        toArray: async () => rows.map((d) => project(d, fo?.projection)),
       };
       return c;
     },
