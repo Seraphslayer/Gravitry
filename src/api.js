@@ -240,6 +240,9 @@ export const createReport = (data) =>
 // Admin
 export const getReports = () => req("reports");
 // Admin: unresolved SOS / incident alerts only (small, polled every ~3 s)
+// Reporter: status of my own report -> { status, acknowledgedAt, acknowledgedNote, resolvedAt }
+export const getReportStatus = (id) =>
+  req(`reports?id=${encodeURIComponent(id)}&action=status`);
 export const getAlerts = () => req("reports?action=alerts");
 // action: "ack" | "resolve"
 export const updateReport = (id, action, note) =>

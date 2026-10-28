@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ShieldAlert, X, Phone, CheckCircle } from "lucide-react";
 import { C, GR, IN, useNotice } from "./shared.jsx";
-import { createReport } from "./api.js";
+import { createReport, getReportStatus } from "./api.js";
 
 // What can be reported, per role (keep in sync with api/reports.js).
 const CATEGORIES = {
@@ -58,6 +58,30 @@ export default function IncidentButton({ role, rideId, style }) {
   const [busy, setBusy] = useState(null); // "sos" | "incident" | null
   const [err, setErr] = useNotice("");
   const [done, setDone] = useState(null); // { kind, id }
+  const [progress, setProgress] = useState(null); // { status, acknowledgedNote }
+
+  // After sending, keep checking whether TODA staff have seen the report.
+  useEffect(() => {
+    if (!done) {
+      setProgress(null);
+      return;
+    }
+    let alive = true;
+    const check = async () => {
+      try {
+        const r = await getReportStatus(done.id);
+        if (alive) setProgress(r);
+      } catch {
+        /* keep last known */
+      }
+    };
+    check();
+    const id = setInterval(check, 4000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [done]);
 
   const close = () => {
     setOpen(false);
@@ -208,6 +232,29 @@ export default function IncidentButton({ role, rideId, style }) {
                       : "We could not get your location, so tell staff where you are. "
                     : "TODA staff will review it. "}
                   {done.kind === "sos" && "If you are in danger, call 911 now."}
+                </p>
+                <p
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 13.5,
+                    margin: "0 0 12px",
+                    padding: "8px 12px",
+                    borderRadius: 10,
+                    background:
+                      progress?.status === "resolved"
+                        ? C.greenLight
+                        : progress?.status === "acknowledged"
+                          ? "#DBEAFE"
+                          : "#FEF3C7",
+                    color: C.text,
+                  }}
+                >
+                  {progress?.status === "resolved"
+                    ? "Naayos na ng TODA staff."
+                    : progress?.status === "acknowledged"
+                      ? `Natanggap ng TODA staff: ${progress.acknowledgedNote || "papunta na ang tulong"}`
+                      : "Naghihintay ng sagot ng TODA staff..."}
                 </p>
                 {done.kind === "sos" && (
                   <a

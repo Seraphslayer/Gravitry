@@ -179,6 +179,28 @@ export default async function handler(req, res) {
       return res.status(201).json({ id: doc._id, kind, ts: doc.ts });
     }
 
+    // ---- reporter: status of my own report (the SOS screen polls this so the
+    // person can see that staff received it / are on the way) ----------------
+    if (req.method === "GET" && id && action === "status") {
+      const session = requireSession(req, res, ["passenger", "driver"]);
+      if (!session) return;
+      const mineId =
+        session.role === "driver" ? session.driverId : session.passengerId;
+      const doc = await col.findOne({ _id: id });
+      if (
+        !doc ||
+        doc.reporter?.role !== session.role ||
+        doc.reporter?.id !== mineId
+      )
+        return res.status(404).json({ error: "Report not found" });
+      return res.status(200).json({
+        status: doc.status,
+        acknowledgedAt: doc.acknowledgedAt || null,
+        acknowledgedNote: doc.acknowledgedNote || null,
+        resolvedAt: doc.resolvedAt || null,
+      });
+    }
+
     // ---- admin: unresolved alerts only (polled every few seconds) ------------
     // Small on purpose: just what the SOS banner needs, so the admin page can
     // ask for it often without loading the whole report history.
@@ -236,6 +258,7 @@ export default async function handler(req, res) {
               status: "acknowledged",
               acknowledgedAt: nowIso,
               acknowledgedBy: session.sub,
+              acknowledgedNote: note || "Papunta na ang tulong",
             }
           : {
               status: "resolved",
