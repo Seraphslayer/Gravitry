@@ -131,6 +131,9 @@ export async function assignRide(db, { id, driverId, reason, by }) {
   if (!doc)
     return { code: 409, body: { error: "That request was just taken" } };
 
+  // The driver is taking a ride, so they leave the terminal line.
+  await leaveLine(db, driver._id);
+
   if (trackable) {
     await db
       .collection("drivers")
@@ -170,4 +173,89 @@ export async function cancelPending(db, id) {
   const doc = result?.value ?? result;
   if (!doc) return { code: 409, body: { error: "Request was just accepted" } };
   return { code: 200, body: doc };
+}
+
+// ---- Terminal line (queue) -----------------------------------------------------
+// Drivers line up at a terminal. The first driver in line takes the next ride.
+// A driver is in ONE line at a time. They join by tapping their NFC card at the
+// kiosk, by tapping "Join line" in the Driver app while near the terminal, or
+// when staff check them in. They leave when they take a ride, or when staff
+// remove them. Entries older than LINE_TTL_MS are dropped (they went home).
+export const LINE_TTL_MS = 3 * 60 * 60 * 1000;
+
+// Rides at a terminal are served by priority, then oldest first:
+//   0 = passenger physically at the terminal (kiosk, or app pickup at the terminal)
+//   1 = app booking made from somewhere else
+export const ridePriority = ({ source, atTerminal }) =>
+  source === "kiosk" || atTerminal ? 0 : 1;
+
+export async function joinLine(db, driver, terminal, via = "nfc") {
+  const col = db.collection("terminal_line");
+  const existing = await col.findOne({ _id: driver._id });
+  if (existing && existing.terminal === terminal) return { joined: false };
+  const doc = {
+    _id: driver._id,
+    terminal,
+    driverName: driver.name,
+    unit: driver.unit || null,
+    joinedAt: new Date().toISOString(),
+    via,
+  };
+  if (existing) await col.deleteOne({ _id: driver._id });
+  await col.insertOne(doc);
+  return { joined: true };
+}
+
+export async function leaveLine(db, driverId) {
+  await db.collection("terminal_line").deleteOne({ _id: driverId });
+}
+
+// The drivers who can really take the next ride at this terminal, in order.
+// Stale entries and drivers who are now on a trip or have expired papers are
+// dropped. -> [{ driverId, name, unit, joinedAt }]
+export async function getLine(db, terminal) {
+  const entries = await db
+    .collection("terminal_line")
+    .find({ terminal })
+    .sort({ joinedAt: 1 })
+    .toArray();
+  const out = [];
+  for (const e of entries) {
+    if (Date.now() - new Date(e.joinedAt).getTime() > LINE_TTL_MS) {
+      await leaveLine(db, e._id);
+      continue;
+    }
+    const d = await db.collection("drivers").findOne({ _id: e._id });
+    if (!d || d.status === "on_trip") {
+      await leaveLine(db, e._id);
+      continue;
+    }
+    if (expiredDocsOf(d).length) continue; // keeps their place, but cannot take rides
+    out.push({
+      driverId: e._id,
+      name: d.name,
+      unit: d.unit || null,
+      joinedAt: e.joinedAt,
+    });
+  }
+  return out;
+}
+
+// Counts for the kiosk / admin: the line of drivers and the passengers waiting.
+export async function lineSnapshot(db, terminal) {
+  const drivers = await getLine(db, terminal);
+  const pending = await db
+    .collection("requests")
+    .find({ status: "pending", origin: terminal })
+    .toArray();
+  const atTerminal = pending.filter((r) => (r.priority ?? 0) === 0).length;
+  return {
+    terminal,
+    drivers: drivers.map((d, i) => ({ position: i + 1, ...d })),
+    passengers: {
+      total: pending.length,
+      atTerminal,
+      app: pending.length - atTerminal,
+    },
+  };
 }
