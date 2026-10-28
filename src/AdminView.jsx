@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Truck, Star, Wifi, X } from "lucide-react";
+import L from "leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import {
   C,
   GR,
   IN,
   TERMINALS,
+  COMPLEX_CENTER,
   getTerm,
   fmtTime,
   getDocStatus,
@@ -29,9 +32,18 @@ import {
   renewTricycleRental,
   releaseTricycle,
   getRequests,
+  overrideRequest,
+  cancelRequest,
   getVerifications,
   getUserStats,
   getReports,
+  getAlerts,
+  getAttendance,
+  getDriverLocations,
+  getStaffCards,
+  createStaffCard,
+  updateStaffCard,
+  deleteStaffCard,
   updateReport,
   getPassengers,
   setTimeLeft,
@@ -1720,23 +1732,931 @@ function TariffTab() {
   );
 }
 
+function OverrideTab({ waiting, drivers, loading, onChanged }) {
+  const [err, setErr] = useNotice("");
+  const [pick, setPick] = useState({});
+  const [reason, setReason] = useState({});
+  const [busy, setBusy] = useState("");
+
+  // Only drivers who could actually take the ride.
+  const eligible = drivers.filter(
+    (d) =>
+      d.status !== "on_trip" &&
+      getDocStatus(d, "license") !== "expired" &&
+      getDocStatus(d, "franchise") !== "expired",
+  );
+
+  const assign = async (r) => {
+    setBusy(r._id);
+    try {
+      await overrideRequest(r._id, pick[r._id], reason[r._id] || "");
+      onChanged();
+    } catch (e) {
+      setErr(e.message || "Failed");
+    }
+    setBusy("");
+  };
+  const cancel = async (r) => {
+    if (!window.confirm(`Cancel ${r._id}?`)) return;
+    setBusy(r._id);
+    try {
+      await cancelRequest(r._id);
+      onChanged();
+    } catch (e) {
+      setErr(e.message || "Failed");
+    }
+    setBusy("");
+  };
+
+  const input = {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    fontFamily: GR,
+    fontSize: 13,
+  };
+
+  return (
+    <div>
+      <p
+        style={{
+          fontFamily: GR,
+          fontSize: 12.5,
+          color: C.muted,
+          margin: "0 0 12px",
+        }}
+      >
+        Manual override: assign a waiting ride to a driver when the NFC tap
+        can't happen (lost card, reader or kiosk offline). Expired license or
+        franchise still blocks the driver. Every override is logged.
+      </p>
+      {err && (
+        <div
+          style={{
+            color: "#B91C1C",
+            fontFamily: GR,
+            fontSize: 13,
+            marginBottom: 10,
+          }}
+        >
+          {err}
+        </div>
+      )}
+      {loading && (
+        <div style={{ fontFamily: GR, color: C.muted }}>Loading...</div>
+      )}
+      {!loading && waiting.length === 0 && (
+        <div
+          style={{
+            fontFamily: GR,
+            color: C.muted,
+            padding: 24,
+            textAlign: "center",
+          }}
+        >
+          No rides are waiting for a driver.
+        </div>
+      )}
+      {waiting.map((r) => (
+        <div
+          key={r._id}
+          style={{
+            background: C.white,
+            border: `1px solid ${C.border}`,
+            borderRadius: 12,
+            padding: 14,
+            marginBottom: 12,
+            fontFamily: GR,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
+            <b style={{ fontSize: 14, color: C.text }}>{r._id}</b>
+            <Badge variant={r.source === "kiosk" ? "blue" : "gray"}>
+              {r.source === "kiosk" ? "Kiosk" : "App"}
+            </Badge>
+            {r.discountClaim && (
+              <Badge variant="yellow">Claims {r.discountClaim}</Badge>
+            )}
+            <span
+              style={{ marginLeft: "auto", fontSize: 11.5, color: C.muted }}
+            >
+              {new Date(r.ts).toLocaleTimeString()}
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: C.text, marginTop: 6 }}>
+            {r.origin} → {r.destination} · ₱{r.fare}
+            {r.passengerName ? ` · ${r.passengerName}` : ""}
+          </div>
+          <div
+            style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}
+          >
+            <select
+              value={pick[r._id] || ""}
+              onChange={(e) => setPick({ ...pick, [r._id]: e.target.value })}
+              style={{ ...input, flex: "1 1 160px" }}
+            >
+              <option value="">Choose driver…</option>
+              {eligible.map((d) => (
+                <option key={d._id} value={d._id}>
+                  {d.name} · {d.unit}
+                </option>
+              ))}
+            </select>
+            <input
+              value={reason[r._id] || ""}
+              maxLength={200}
+              onChange={(e) =>
+                setReason({ ...reason, [r._id]: e.target.value })
+              }
+              placeholder="Reason (e.g. lost NFC card)"
+              style={{ ...input, flex: "2 1 200px" }}
+            />
+            <button
+              disabled={
+                busy === r._id ||
+                !pick[r._id] ||
+                (reason[r._id] || "").trim().length < 3
+              }
+              onClick={() => assign(r)}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "none",
+                background: C.navy,
+                color: "#fff",
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+                opacity:
+                  !pick[r._id] || (reason[r._id] || "").trim().length < 3
+                    ? 0.5
+                    : 1,
+              }}
+            >
+              Assign
+            </button>
+            <button
+              disabled={busy === r._id}
+              onClick={() => cancel(r)}
+              style={{
+                padding: "8px 14px",
+                borderRadius: 8,
+                border: "1px solid #DC2626",
+                background: C.white,
+                color: "#DC2626",
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              Cancel ride
+            </button>
+          </div>
+        </div>
+      ))}
+      <StaffCards />
+    </div>
+  );
+}
+
+function StaffCards() {
+  const [cards, setCards] = useState([]);
+  const [err, setErr] = useNotice("");
+  const [ok, setOk] = useNotice("");
+  const [f, setF] = useState({ name: "", nfcId: "", pin: "" });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      setCards(await getStaffCards());
+    } catch {
+      /* keep list */
+    }
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const run = async (fn, text) => {
+    setBusy(true);
+    try {
+      await fn();
+      setOk(text);
+      await load();
+    } catch (e) {
+      setErr(e.message?.replace(/^API .* failed: /, "") || "Failed");
+    }
+    setBusy(false);
+  };
+  const input = {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    fontFamily: GR,
+    fontSize: 13,
+  };
+  const small = (color) => ({
+    padding: "6px 10px",
+    borderRadius: 8,
+    border: `1px solid ${color}`,
+    background: C.white,
+    color,
+    fontFamily: GR,
+    fontWeight: 700,
+    fontSize: 12,
+    cursor: "pointer",
+  });
+
+  return (
+    <div style={{ marginTop: 24, fontFamily: GR }}>
+      <h3 style={{ fontSize: 15, color: C.text, margin: "0 0 4px" }}>
+        Staff cards
+      </h3>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: "0 0 10px" }}>
+        An admin taps their card at the kiosk, enters the PIN, and gets the
+        staff panel (assign a driver, cancel a ride, manual check-in). The panel
+        closes itself after 5 minutes. Card numbers can't match a driver's card.
+      </p>
+      {err && (
+        <div style={{ color: "#B91C1C", fontSize: 13, marginBottom: 8 }}>
+          {err}
+        </div>
+      )}
+      {ok && (
+        <div style={{ color: C.green, fontSize: 13, marginBottom: 8 }}>
+          {ok}
+        </div>
+      )}
+      {cards.map((c) => (
+        <div
+          key={c.id}
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+            background: C.white,
+            border: `1px solid ${C.border}`,
+            borderRadius: 10,
+            padding: "10px 12px",
+            marginBottom: 8,
+          }}
+        >
+          <b style={{ fontSize: 13.5, color: C.text }}>{c.name}</b>
+          <span style={{ fontSize: 12, color: C.muted }}>
+            card ···{c.cardEnd}
+          </span>
+          <Badge variant={c.active ? "green" : "gray"}>
+            {c.active ? "active" : "disabled"}
+          </Badge>
+          <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <button
+              disabled={busy}
+              style={small(C.navy)}
+              onClick={() => {
+                const pin = window.prompt("New PIN (4-8 digits)");
+                if (pin)
+                  run(() => updateStaffCard(c.id, { pin }), "PIN changed");
+              }}
+            >
+              Reset PIN
+            </button>
+            <button
+              disabled={busy}
+              style={small(C.navy)}
+              onClick={() =>
+                run(
+                  () => updateStaffCard(c.id, { active: !c.active }),
+                  c.active ? "Card disabled" : "Card enabled",
+                )
+              }
+            >
+              {c.active ? "Disable" : "Enable"}
+            </button>
+            <button
+              disabled={busy}
+              style={small("#DC2626")}
+              onClick={() => {
+                if (window.confirm(`Delete ${c.name}'s card?`))
+                  run(() => deleteStaffCard(c.id), "Card deleted");
+              }}
+            >
+              Delete
+            </button>
+          </span>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+        <input
+          style={{ ...input, flex: "1 1 130px" }}
+          placeholder="Name"
+          value={f.name}
+          onChange={(e) => setF({ ...f, name: e.target.value })}
+        />
+        <input
+          style={{ ...input, flex: "1 1 150px" }}
+          placeholder="Card number (tap it here)"
+          inputMode="numeric"
+          value={f.nfcId}
+          onChange={(e) =>
+            setF({ ...f, nfcId: e.target.value.replace(/\D/g, "") })
+          }
+        />
+        <input
+          style={{ ...input, flex: "1 1 90px" }}
+          placeholder="PIN"
+          type="password"
+          inputMode="numeric"
+          maxLength={8}
+          value={f.pin}
+          onChange={(e) =>
+            setF({ ...f, pin: e.target.value.replace(/\D/g, "") })
+          }
+        />
+        <button
+          disabled={
+            busy ||
+            f.name.trim().length < 2 ||
+            f.nfcId.length < 6 ||
+            f.pin.length < 4
+          }
+          onClick={() =>
+            run(async () => {
+              await createStaffCard(f);
+              setF({ name: "", nfcId: "", pin: "" });
+            }, "Staff card added")
+          }
+          style={{
+            padding: "8px 14px",
+            borderRadius: 8,
+            border: "none",
+            background: C.navy,
+            color: "#fff",
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 13,
+            cursor: "pointer",
+            opacity:
+              busy ||
+              f.name.trim().length < 2 ||
+              f.nfcId.length < 6 ||
+              f.pin.length < 4
+                ? 0.5
+                : 1,
+          }}
+        >
+          Add card
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AttendanceTab({ drivers }) {
+  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  const [date, setDate] = useState(today);
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useNotice("");
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await getAttendance(date);
+        if (alive) setRows(r.rows);
+      } catch (e) {
+        if (alive)
+          setErr(e.message?.replace(/^API .* failed: /, "") || "Failed");
+      }
+    };
+    load();
+    const id = setInterval(load, 8000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const presentIds = new Set(rows.map((r) => r.driverId));
+  const absent = drivers.filter((d) => !presentIds.has(d._id));
+  const time = (iso) =>
+    new Date(iso).toLocaleTimeString("en-PH", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  return (
+    <div style={{ fontFamily: GR }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          alignItems: "center",
+          marginBottom: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <input
+          type="date"
+          value={date}
+          max={today}
+          onChange={(e) => e.target.value && setDate(e.target.value)}
+          style={{
+            padding: "8px 10px",
+            borderRadius: 8,
+            border: `1px solid ${C.border}`,
+            fontFamily: GR,
+            fontSize: 13,
+          }}
+        />
+        <span style={{ fontSize: 13, color: C.muted }}>
+          {rows.length} present · {absent.length} not yet tapped
+        </span>
+      </div>
+      {err && (
+        <div style={{ color: "#B91C1C", fontSize: 13, marginBottom: 8 }}>
+          {err}
+        </div>
+      )}
+      <p style={{ fontSize: 12, color: C.muted, margin: "0 0 10px" }}>
+        A driver is counted present at a terminal when they tap their NFC card
+        at its kiosk (or staff check them in). Tapping to accept a ride counts
+        too.
+      </p>
+      {rows.map((r) => (
+        <div
+          key={r._id}
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+            background: C.white,
+            border: `1px solid ${C.border}`,
+            borderRadius: 10,
+            padding: "9px 12px",
+            marginBottom: 6,
+            fontSize: 13,
+          }}
+        >
+          <b style={{ color: C.text }}>{r.driverName}</b>
+          <span style={{ color: C.muted }}>
+            {r.unit || "-"} · {r.terminal}
+          </span>
+          <Badge variant={r.via === "manual" ? "yellow" : "green"}>
+            {r.via === "manual" ? "manual" : "tapped"}
+          </Badge>
+          <span style={{ marginLeft: "auto", color: C.muted, fontSize: 12 }}>
+            in {time(r.firstTapAt)}
+            {r.taps > 1 ? ` · last ${time(r.lastTapAt)}` : ""}
+          </span>
+        </div>
+      ))}
+      {rows.length === 0 && (
+        <div
+          style={{
+            color: C.muted,
+            fontSize: 13,
+            padding: 16,
+            textAlign: "center",
+          }}
+        >
+          No one has checked in on this date.
+        </div>
+      )}
+      {absent.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 13.5, color: C.text, margin: "16px 0 6px" }}>
+            Not yet tapped
+          </h3>
+          <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.7 }}>
+            {absent
+              .map((d) => `${d.name}${d.unit ? ` (${d.unit})` : ""}`)
+              .join(" · ")}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const agoText = (iso) => {
+  const s = Math.max(
+    0,
+    Math.round((Date.now() - new Date(iso).getTime()) / 1000),
+  );
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+};
+
+const driverPin = (label, live) =>
+  L.divIcon({
+    className: "",
+    html: `<div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-100%)">
+      <div style="background:${live ? "#16A34A" : "#6B7280"};color:#fff;border:2px solid #fff;border-radius:14px;padding:3px 8px;font:700 11px 'Space Grotesk',sans-serif;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.4)">${label}</div>
+      <div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid ${live ? "#16A34A" : "#6B7280"}"></div>
+    </div>`,
+    iconSize: [0, 0],
+  });
+
+const esc = (t) =>
+  String(t ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+
+function FitOnce({ points }) {
+  const map = useMap();
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current || points.length === 0) return;
+    done.current = true;
+    map.fitBounds(points, { padding: [40, 40], maxZoom: 17 });
+  }, [points, map]);
+  return null;
+}
+
+function DriversMapTab() {
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useNotice("");
+  const [focus, setFocus] = useState(null);
+  const [, tick] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await getDriverLocations();
+        if (alive) setRows(r);
+      } catch (e) {
+        if (alive)
+          setErr(e.message?.replace(/^API .* failed: /, "") || "Failed");
+      }
+      if (alive) tick((n) => n + 1);
+    };
+    load();
+    const id = setInterval(load, 8000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const located = rows.filter((r) => r.location);
+  const unlocated = rows.filter((r) => !r.location);
+  const points = located.map((r) => [r.location.lat, r.location.lng]);
+
+  return (
+    <div style={{ fontFamily: GR }}>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: "0 0 10px" }}>
+        Each driver's last shared location from their Driver app.{" "}
+        <b style={{ color: "#16A34A" }}>Green</b> = online now,{" "}
+        <b style={{ color: "#6B7280" }}>gray</b> = last known spot (offline).
+        Drivers who never turned on location sharing are listed below the map.
+      </p>
+      {err && (
+        <div style={{ color: "#B91C1C", fontSize: 13, marginBottom: 8 }}>
+          {err}
+        </div>
+      )}
+      <div
+        style={{
+          height: 460,
+          borderRadius: 12,
+          overflow: "hidden",
+          border: `1px solid ${C.border}`,
+        }}
+      >
+        <MapContainer
+          center={COMPLEX_CENTER}
+          zoom={16}
+          style={{ width: "100%", height: "100%" }}
+        >
+          <TileLayer
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution="&copy; OpenStreetMap"
+          />
+          <FitOnce points={points} />
+          {focus && <FlyTo point={focus} />}
+          {TERMINALS.map((t) => (
+            <Marker
+              key={t.id}
+              position={[t.lat, t.lng]}
+              icon={L.divIcon({
+                className: "",
+                html: `<div style="transform:translate(-50%,-50%);background:${C.navy};color:#fff;border:2px solid #fff;border-radius:6px;padding:2px 6px;font:700 10px 'Space Grotesk',sans-serif;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.35)">${esc(t.short)}</div>`,
+                iconSize: [0, 0],
+              })}
+            />
+          ))}
+          {located.map((r) => (
+            <Marker
+              key={r.id}
+              position={[r.location.lat, r.location.lng]}
+              icon={driverPin(esc(r.unit || r.name), r.live)}
+            >
+              <Popup>
+                <b>{r.name}</b>
+                <br />
+                {r.unit || "-"} · {r.live ? "online" : "offline"}
+                <br />
+                {r.live ? "Updated" : "Last seen"} {agoText(r.location.at)}
+                {r.status === "on_trip" && (
+                  <>
+                    <br />
+                    On a trip
+                  </>
+                )}
+              </Popup>
+            </Marker>
+          ))}
+        </MapContainer>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        {located.map((r) => (
+          <button
+            key={r.id}
+            onClick={() =>
+              setFocus({
+                lat: r.location.lat,
+                lng: r.location.lng,
+                k: Date.now(),
+              })
+            }
+            style={{
+              display: "flex",
+              width: "100%",
+              gap: 8,
+              alignItems: "center",
+              textAlign: "left",
+              background: C.white,
+              border: `1px solid ${C.border}`,
+              borderRadius: 10,
+              padding: "9px 12px",
+              marginBottom: 6,
+              fontFamily: GR,
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: r.live ? "#16A34A" : "#9CA3AF",
+                flexShrink: 0,
+              }}
+            />
+            <b style={{ color: C.text }}>{r.name}</b>
+            <span style={{ color: C.muted }}>{r.unit || "-"}</span>
+            <span style={{ marginLeft: "auto", color: C.muted, fontSize: 12 }}>
+              {r.live ? "live" : "last seen"} · {agoText(r.location.at)}
+            </span>
+          </button>
+        ))}
+        {unlocated.length > 0 && (
+          <p style={{ fontSize: 12.5, color: C.muted, margin: "10px 0 0" }}>
+            No location yet:{" "}
+            {unlocated
+              .map((d) => `${d.name}${d.unit ? ` (${d.unit})` : ""}`)
+              .join(" · ")}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FlyTo({ point }) {
+  const map = useMap();
+  useEffect(() => {
+    map.flyTo([point.lat, point.lng], 18, { duration: 0.8 });
+  }, [point, map]);
+  return null;
+}
+
+// One shared AudioContext, unlocked by the first click anywhere on the page
+// (browsers refuse to play sound before that).
+let audioCtx = null;
+function getAudio() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  return audioCtx;
+}
+if (typeof window !== "undefined") {
+  const unlock = () => {
+    try {
+      getAudio()?.resume();
+    } catch {
+      /* ignore */
+    }
+  };
+  window.addEventListener("pointerdown", unlock);
+  window.addEventListener("keydown", unlock);
+}
+
 function beep() {
   try {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new Ctx();
+    const ctx = getAudio();
+    if (!ctx || ctx.state !== "running") return false;
     [0, 0.25, 0.5].forEach((t) => {
       const o = ctx.createOscillator();
       const g = ctx.createGain();
-      o.frequency.value = 880;
-      g.gain.value = 0.15;
+      o.type = "square";
+      o.frequency.value = t === 0.25 ? 660 : 880;
+      g.gain.value = 0.12;
       o.connect(g);
       g.connect(ctx.destination);
       o.start(ctx.currentTime + t);
       o.stop(ctx.currentTime + t + 0.18);
     });
+    return true;
   } catch {
-    /* audio not allowed */
+    return false;
   }
+}
+
+// Red banner on every admin tab while an SOS is unresolved. Polls every 3 s,
+// sounds the alarm every 4 s until the SOS is acknowledged, and turns the
+// browser tab title into a flashing warning so it is noticed from another tab.
+function SosBanner({ onOpen }) {
+  const [alerts, setAlerts] = useState([]);
+  const [muted, setMuted] = useState(false);
+  const [soundOk, setSoundOk] = useState(true);
+  const [, setNow] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const a = await getAlerts();
+        if (alive) setAlerts(a);
+      } catch {
+        /* keep last known */
+      }
+    };
+    load();
+    const id = setInterval(load, 3000);
+    const tk = setInterval(() => setNow((n) => n + 1), 1000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      clearInterval(tk);
+    };
+  }, []);
+
+  const sos = alerts.filter((a) => a.kind === "sos");
+  const unanswered = sos.filter((a) => a.status === "open");
+
+  // alarm while any SOS is still unanswered
+  useEffect(() => {
+    if (unanswered.length === 0 || muted) return;
+    const ring = () => setSoundOk(beep());
+    ring();
+    const id = setInterval(ring, 4000);
+    return () => clearInterval(id);
+  }, [unanswered.length, muted]);
+
+  // a new unanswered SOS un-mutes the alarm
+  const newest = unanswered[0]?._id;
+  useEffect(() => {
+    if (newest) setMuted(false);
+  }, [newest]);
+
+  // flashing tab title
+  useEffect(() => {
+    if (unanswered.length === 0) return;
+    const original = document.title;
+    let on = false;
+    const id = setInterval(() => {
+      on = !on;
+      document.title = on ? `SOS! (${unanswered.length}) ` : original;
+    }, 800);
+    return () => {
+      clearInterval(id);
+      document.title = original;
+    };
+  }, [unanswered.length]);
+
+  if (sos.length === 0) return null;
+  const waited = (iso) => {
+    const s = Math.max(
+      0,
+      Math.round((Date.now() - new Date(iso).getTime()) / 1000),
+    );
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
+
+  return (
+    <div
+      role="alert"
+      style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 2000,
+        background: unanswered.length ? "#B91C1C" : "#92400E",
+        color: "#fff",
+        padding: "10px clamp(12px,4vw,24px)",
+        fontFamily: GR,
+        boxShadow: "0 4px 14px rgba(0,0,0,0.35)",
+        animation: unanswered.length ? "gvSosPulse 1s infinite" : "none",
+      }}
+    >
+      <style>{`@keyframes gvSosPulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.35)}}`}</style>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        <b style={{ fontSize: 15 }}>
+          {unanswered.length
+            ? `SOS - ${unanswered.length} need${unanswered.length === 1 ? "s" : ""} a response`
+            : `SOS - ${sos.length} being handled`}
+        </b>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          {unanswered.length > 0 && (
+            <button
+              onClick={() => setMuted(true)}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 8,
+                border: "1px solid #fff",
+                background: "transparent",
+                color: "#fff",
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 12.5,
+                cursor: "pointer",
+              }}
+            >
+              {muted ? "Alarm muted" : "Mute alarm"}
+            </button>
+          )}
+          <button
+            onClick={onOpen}
+            style={{
+              padding: "6px 14px",
+              borderRadius: 8,
+              border: "none",
+              background: "#fff",
+              color: "#B91C1C",
+              fontFamily: GR,
+              fontWeight: 800,
+              fontSize: 12.5,
+              cursor: "pointer",
+            }}
+          >
+            Open incidents
+          </button>
+        </span>
+      </div>
+      {sos.slice(0, 3).map((a) => (
+        <div key={a._id} style={{ fontSize: 13, marginTop: 4 }}>
+          <b>{a.reporter?.name || "Unknown"}</b> ({a.reporter?.role}
+          {a.reporter?.unit ? ` · ${a.reporter.unit}` : ""}) ·{" "}
+          {a.status === "open" ? "waiting " : "acknowledged · "}
+          {waited(a.ts)}
+          {a.reporter?.phone && (
+            <>
+              {" · "}
+              <a
+                href={`tel:${a.reporter.phone}`}
+                style={{ color: "#fff", fontWeight: 800 }}
+              >
+                {a.reporter.phone}
+              </a>
+            </>
+          )}
+          {!a.hasLocation && " · no location"}
+        </div>
+      ))}
+      {unanswered.length > 0 && !soundOk && !muted && (
+        <div style={{ fontSize: 12, marginTop: 4, opacity: 0.9 }}>
+          Click anywhere on this page to turn on the alarm sound.
+        </div>
+      )}
+    </div>
+  );
 }
 
 function IncidentsTab({ items, loading, onChanged }) {
@@ -2732,17 +3652,6 @@ function UsersTab() {
     try {
       const r = await getReports();
       setReports(r);
-      // Beep once for each new open SOS (browsers may block it until the page is clicked).
-      const fresh = r.filter(
-        (x) =>
-          x.kind === "sos" &&
-          x.status === "open" &&
-          !seenSos.current.has(x._id),
-      );
-      const first = seenSos.current.size === 0 && !seenSos.current.__init;
-      fresh.forEach((x) => seenSos.current.add(x._id));
-      seenSos.current.__init = true;
-      if (fresh.length && !first) beep();
     } catch {
       /* keep last known reports */
     }
@@ -3174,7 +4083,6 @@ export default function AdminView() {
   const [verifs, setVerifs] = useState([]);
   const [userStats, setUserStats] = useState(null);
   const [reports, setReports] = useState([]);
-  const seenSos = useRef(new Set());
   const [loading, setLoading] = useState(true);
 
   const loadAll = useCallback(async () => {
@@ -3209,6 +4117,7 @@ export default function AdminView() {
     return () => clearInterval(id);
   }, [loadAll]);
 
+  const waiting = logs.filter((x) => x.status === "pending");
   const openReports = reports.filter((x) => x.status === "open").length;
 
   const stats = [
@@ -3234,6 +4143,7 @@ export default function AdminView() {
 
   return (
     <div style={{ height: "100%", background: C.surface, overflowY: "auto" }}>
+      <SosBanner onOpen={() => setTab("incidents")} />
       <div
         style={{
           background: C.navy,
@@ -3343,6 +4253,9 @@ export default function AdminView() {
             ["fares", "Tariff"],
             ["users", "Users"],
             ["verify", "Verify"],
+            ["map", "Map"],
+            ["attendance", "Attendance"],
+            ["override", "Override"],
             ["incidents", "Incidents"],
             ["log", "Log"],
           ].map(([key, label]) => (
@@ -3366,6 +4279,20 @@ export default function AdminView() {
               }}
             >
               {label}
+              {key === "override" && waiting.length > 0 && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    background: "#DC2626",
+                    color: "#fff",
+                    borderRadius: 10,
+                    padding: "1px 7px",
+                    fontSize: 10.5,
+                  }}
+                >
+                  {waiting.length}
+                </span>
+              )}
               {key === "incidents" && openReports > 0 && (
                 <span
                   style={{
@@ -3413,6 +4340,16 @@ export default function AdminView() {
         {tab === "users" && <UsersTab />}
         {tab === "verify" && (
           <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
+        )}
+        {tab === "map" && <DriversMapTab />}
+        {tab === "attendance" && <AttendanceTab drivers={drivers} />}
+        {tab === "override" && (
+          <OverrideTab
+            waiting={waiting}
+            drivers={drivers}
+            loading={loading}
+            onChanged={loadAll}
+          />
         )}
         {tab === "incidents" && (
           <IncidentsTab items={reports} loading={loading} onChanged={loadAll} />

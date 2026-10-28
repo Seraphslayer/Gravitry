@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import OnScreenKeyboard from "./OnScreenKeyboard.jsx";
+import KioskStaff from "./KioskStaff.jsx";
 import {
   MapContainer,
   TileLayer,
@@ -154,6 +156,8 @@ export default function KioskView() {
   const [discountClaim, setDiscountClaim] = useState(null);
 
   const [query, setQuery] = useState("");
+  const [showKb, setShowKb] = useState(false);
+  const [staffCard, setStaffCard] = useState(null); // { nfcId, name } after an admin card tap
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [pinMode, setPinMode] = useState(false);
@@ -328,6 +332,21 @@ export default function KioskView() {
     lastAcceptedRef.current = { id: nfcId, time: now };
     try {
       const doc = await acceptViaNfc(nfcId, KIOSK);
+      if (doc.staffCard) {
+        // Admin staff card: open the staff panel (it asks for the PIN).
+        setStaffCard({ nfcId, name: doc.name });
+        return;
+      }
+      if (doc.checkedIn) {
+        // No ride was waiting, so the tap counted as attendance.
+        setNfcNotice({
+          type: "success",
+          text: doc.first
+            ? `${doc.driver} · ${doc.unit || ""} - attendance recorded`
+            : `${doc.driver} · ${doc.unit || ""} - already checked in today`,
+        });
+        return;
+      }
       setNfcNotice({
         type: "success",
         text: `${doc.driver} · ${doc.unit || ""} ${doc.plate || ""} · ride to ${dropoffLabel(doc)} ${
@@ -413,6 +432,7 @@ export default function KioskView() {
     setPinMode(false);
     setResults([]);
     setQuery("");
+    setShowKb(false);
     if (!label) {
       const addr = await reverseGeocode(lt, lg);
       if (draftKey.current === key) {
@@ -660,6 +680,14 @@ export default function KioskView() {
           </span>
         )}
       </button>
+
+      {staffCard && (
+        <KioskStaff
+          card={staffCard}
+          terminal={KIOSK}
+          onClose={() => setStaffCard(null)}
+        />
+      )}
 
       {nfcNotice && (
         <div
@@ -969,6 +997,10 @@ export default function KioskView() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onFocus={() => setShowKb(true)}
+                onClick={() => setShowKb(true)}
+                inputMode="none"
+                autoComplete="off"
                 placeholder="Search an address or place"
                 style={{
                   width: "100%",
@@ -1002,6 +1034,14 @@ export default function KioskView() {
                 </button>
               )}
             </div>
+
+            {showKb && (
+              <OnScreenKeyboard
+                value={query}
+                onChange={setQuery}
+                onDone={() => setShowKb(false)}
+              />
+            )}
 
             {searching && (
               <p

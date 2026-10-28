@@ -13,6 +13,7 @@ const SENSITIVE_FIELDS = [
   "appOnline",
   "appLastSeen",
   "appLocation",
+  "lastLocation",
 ];
 
 // A driver counts as "active" if their Driver app is switched to Online AND it
@@ -110,6 +111,8 @@ async function createDriver(db, input) {
     return { ok: false, error: `Username "${username}" is already taken` };
   if (nfcId && (await db.collection("drivers").findOne({ nfcId })))
     return { ok: false, error: "That NFC card is already assigned" };
+  if (nfcId && (await db.collection("staff_cards").findOne({ _id: nfcId })))
+    return { ok: false, error: "That NFC card is a staff card" };
   if (unit && (await db.collection("tricycles").findOne({ _id: unit })))
     return { ok: false, error: `Unit ${unit} is already registered` };
 
@@ -193,6 +196,9 @@ export default async function handler(req, res) {
       };
       if (hasPosition) {
         update.$set.appLocation = { lat, lng, at: nowIso };
+        // Remembered even after the driver goes offline, so TODA staff can
+        // see where each driver was last (admin map only).
+        update.$set.lastLocation = { lat, lng, at: nowIso };
       } else if (!online) {
         // Going offline stops sharing the position right away.
         update.$unset = { appLocation: "" };
@@ -239,6 +245,32 @@ export default async function handler(req, res) {
       });
     }
 
+    // GET /api/drivers?action=locations   (admin only)
+    // Every driver's last shared position for the admin map. Never part of the
+    // public driver list.
+    if (req.method === "GET" && action === "locations") {
+      const session = requireSession(req, res, ["admin"]);
+      if (!session) return;
+      const docs = await col
+        .find({}, { projection: { passwordHash: 0, username: 0 } })
+        .toArray();
+      return res.status(200).json(
+        docs.map((d) => {
+          const p = withPresence(d);
+          const loc = d.lastLocation || d.appLocation || null;
+          return {
+            id: d._id,
+            name: d.name,
+            unit: d.unit || null,
+            contact: d.contact || null,
+            status: d.status || null,
+            live: p.appActive && !!d.appLocation,
+            location: loc,
+          };
+        }),
+      );
+    }
+
     if (req.method === "GET") {
       // Never expose passwordHash or login username to the frontend - the
       // driver list is read by the kiosk, passenger app, and admin dashboard,
@@ -246,7 +278,14 @@ export default async function handler(req, res) {
       const docs = await col
         .find(
           {},
-          { projection: { passwordHash: 0, username: 0, appLocation: 0 } },
+          {
+            projection: {
+              passwordHash: 0,
+              username: 0,
+              appLocation: 0,
+              lastLocation: 0,
+            },
+          },
         )
         .toArray();
       return res.status(200).json(docs.map(withPresence));
@@ -275,7 +314,14 @@ export default async function handler(req, res) {
       await col.updateOne({ _id: id }, { $set: patch });
       const doc = await col.findOne(
         { _id: id },
-        { projection: { passwordHash: 0, username: 0, appLocation: 0 } },
+        {
+          projection: {
+            passwordHash: 0,
+            username: 0,
+            appLocation: 0,
+            lastLocation: 0,
+          },
+        },
       );
       return res.status(200).json(withPresence(doc));
     }

@@ -55,6 +55,8 @@ export const updateFare = (origin, destination, fare) =>
 
 // -- Drivers ----------------------------------------------------------------
 export const getDrivers = () => req("drivers");
+// Admin: every driver's last shared location -> [{ id, name, unit, live, location:{lat,lng,at}|null }]
+export const getDriverLocations = () => req("drivers?action=locations");
 // Admin: create one driver account. Blank password -> one is generated and
 // returned (once). -> { id, name, username, password, generated }
 export const createDriver = (data) =>
@@ -185,6 +187,13 @@ export const markPickedUp = (id) =>
     method: "POST",
   });
 
+// Admin manual override: assign a waiting ride to a driver without an NFC tap.
+export const overrideRequest = (id, driverId, reason) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=override`, {
+    method: "POST",
+    body: JSON.stringify({ driverId, reason }),
+  });
+
 export const cancelRequest = (id) =>
   req(`requests?id=${encodeURIComponent(id)}&action=cancel`, {
     method: "POST",
@@ -230,9 +239,62 @@ export const createReport = (data) =>
   req("reports?action=create", { method: "POST", body: JSON.stringify(data) });
 // Admin
 export const getReports = () => req("reports");
+// Admin: unresolved SOS / incident alerts only (small, polled every ~3 s)
+export const getAlerts = () => req("reports?action=alerts");
 // action: "ack" | "resolve"
 export const updateReport = (id, action, note) =>
   req(`reports?id=${encodeURIComponent(id)}&action=${action}`, {
     method: "POST",
     body: JSON.stringify({ note: note || "" }),
+  });
+
+// -- Kiosk staff (admin NFC card + PIN) and attendance ---------------------
+// Kiosk: card tap + PIN -> short-lived token { token, name, expiresInSeconds }
+export const staffLogin = (nfcId, pin) =>
+  req("staff?action=login", {
+    method: "POST",
+    body: JSON.stringify({ nfcId, pin }),
+  });
+const staffReq = (token, path, options = {}) =>
+  req(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", "x-staff-token": token },
+  });
+export const staffDrivers = (token, terminal) =>
+  staffReq(
+    token,
+    `staff?action=drivers&terminal=${encodeURIComponent(terminal)}`,
+  );
+export const staffAssign = (token, requestId, driverId) =>
+  staffReq(token, "staff?action=assign", {
+    method: "POST",
+    body: JSON.stringify({ requestId, driverId }),
+  });
+export const staffCancel = (token, requestId) =>
+  staffReq(token, "staff?action=cancel", {
+    method: "POST",
+    body: JSON.stringify({ requestId }),
+  });
+export const staffCheckin = (token, driverId, terminal) =>
+  staffReq(token, "staff?action=checkin", {
+    method: "POST",
+    body: JSON.stringify({ driverId, terminal }),
+  });
+// Admin dashboard
+export const getAttendance = (date) =>
+  req(`staff?action=attendance${date ? `&date=${date}` : ""}`);
+export const getStaffCards = () => req("staff?action=cards");
+export const createStaffCard = (data) =>
+  req("staff?action=card-create", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+export const updateStaffCard = (id, data) =>
+  req(`staff?action=card-update&id=${encodeURIComponent(id)}`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+export const deleteStaffCard = (id) =>
+  req(`staff?action=card-delete&id=${encodeURIComponent(id)}`, {
+    method: "POST",
   });

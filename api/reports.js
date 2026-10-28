@@ -179,6 +179,36 @@ export default async function handler(req, res) {
       return res.status(201).json({ id: doc._id, kind, ts: doc.ts });
     }
 
+    // ---- admin: unresolved alerts only (polled every few seconds) ------------
+    // Small on purpose: just what the SOS banner needs, so the admin page can
+    // ask for it often without loading the whole report history.
+    if (req.method === "GET" && action === "alerts") {
+      const session = requireSession(req, res, ["admin"]);
+      if (!session) return;
+      const docs = await col
+        .find({ status: { $in: ["open", "acknowledged"] } })
+        .sort({ ts: -1 })
+        .toArray();
+      return res.status(200).json(
+        docs.slice(0, 50).map((d) => ({
+          _id: d._id,
+          kind: d.kind,
+          categoryLabel: d.categoryLabel,
+          status: d.status,
+          ts: d.ts,
+          reporter: d.reporter
+            ? {
+                role: d.reporter.role,
+                name: d.reporter.name,
+                phone: d.reporter.phone,
+                unit: d.reporter.unit,
+              }
+            : null,
+          hasLocation: !!d.location,
+        })),
+      );
+    }
+
     // ---- admin: list ---------------------------------------------------------
     if (req.method === "GET" && !id) {
       const session = requireSession(req, res, ["admin"]);

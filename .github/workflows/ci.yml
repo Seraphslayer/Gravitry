@@ -1,0 +1,22 @@
+name: CI
+
+# Runs on every push and pull request: checks the API files, runs the tests,
+# and builds the app. A red X means something broke - fix it before merging.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
