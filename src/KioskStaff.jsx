@@ -7,6 +7,8 @@ import {
   staffAssign,
   staffCancel,
   staffCheckin,
+  staffRemoveFromLine,
+  getQueue,
   getRequests,
 } from "./api.js";
 
@@ -33,6 +35,7 @@ export default function KioskStaff({ card, terminal, onClose }) {
   const [tab, setTab] = useState("rides");
   const [rides, setRides] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [line, setLine] = useState([]);
   const [pickFor, setPickFor] = useState(null); // ride being assigned
   const [now, setNow] = useState(Date.now());
 
@@ -60,12 +63,14 @@ export default function KioskStaff({ card, terminal, onClose }) {
   const load = useCallback(async () => {
     if (!auth) return;
     try {
-      const [r, d] = await Promise.all([
+      const [r, d, q] = await Promise.all([
         getRequests({ status: "pending", origin: terminal }),
         staffDrivers(auth.token, terminal),
+        getQueue(terminal),
       ]);
       setRides(r);
       setDrivers(d);
+      setLine(q.drivers);
     } catch (e) {
       setErr(clean(e));
     }
@@ -457,6 +462,64 @@ export default function KioskStaff({ card, terminal, onClose }) {
                   )}
                 </div>
               ))}
+
+            {tab === "line" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {line.length === 0 && (
+                  <p
+                    style={{
+                      fontFamily: IN,
+                      color: C.muted,
+                      fontSize: 13,
+                      textAlign: "center",
+                    }}
+                  >
+                    Walang tricycle sa pila.
+                  </p>
+                )}
+                {line.map((d) => (
+                  <div
+                    key={d.driverId}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      background: C.surface,
+                      borderRadius: 12,
+                      padding: "10px 12px",
+                      fontFamily: GR,
+                      fontSize: 14,
+                      color: C.text,
+                    }}
+                  >
+                    <b>#{d.position}</b>
+                    <span style={{ flex: 1 }}>
+                      {d.name} · {d.unit || "-"}
+                    </span>
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        if (window.confirm(`Alisin si ${d.name} sa pila?`))
+                          run(
+                            () => staffRemoveFromLine(auth.token, d.driverId),
+                            `${d.name} inalis sa pila`,
+                          );
+                      }}
+                      style={{
+                        ...btn,
+                        padding: "8px 12px",
+                        background: C.white,
+                        color: "#DC2626",
+                        border: "1px solid #DC2626",
+                        fontSize: 12.5,
+                      }}
+                    >
+                      Alisin
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {tab === "checkin" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

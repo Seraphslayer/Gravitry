@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import OnScreenKeyboard from "./OnScreenKeyboard.jsx";
 import KioskStaff from "./KioskStaff.jsx";
+import LineStatus from "./LineStatus.jsx";
 import {
   MapContainer,
   TileLayer,
@@ -341,9 +342,7 @@ export default function KioskView() {
         // No ride was waiting, so the tap counted as attendance.
         setNfcNotice({
           type: "success",
-          text: doc.first
-            ? `${doc.driver} · ${doc.unit || ""} - attendance recorded`
-            : `${doc.driver} · ${doc.unit || ""} - already checked in today`,
+          text: `${doc.driver} · ${doc.unit || ""} - nasa pila: #${doc.position} sa ${doc.lineLength} tricycle`,
         });
         return;
       }
@@ -680,6 +679,8 @@ export default function KioskView() {
           </span>
         )}
       </button>
+
+      <LineStatus terminal={KIOSK} />
 
       {staffCard && (
         <KioskStaff

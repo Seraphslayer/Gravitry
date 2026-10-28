@@ -34,6 +34,13 @@ Run `npm run check`, `npm test` and `npm run build` before saying a change works
   trust ids in the request body (see `api/_authz.js`).
 - Kiosk rides can only be accepted by NFC tap (or admin / staff-panel manual
   override). Expired license or franchise blocks a driver everywhere.
+- Terminal line (`api/_dispatch.js`, `api/queue.js`): drivers line up per
+  terminal (NFC tap, Driver app near the terminal, or staff check-in); the
+  first in line takes the next ride (`LINE_STRICT` in `api/requests.js`).
+  Rides have a `priority`: 0 = passenger at the terminal (kiosk, or app pickup
+  within 60 m of it), 1 = app booking from elsewhere. Priority 0 is served
+  first, then oldest first. Terminal coordinates live in BOTH `src/shared.jsx`
+  and `api/_terminals.js` - keep in sync.
 - The temp-access value `TEMP_ACCESS_SECONDS` in `api/_settings.js` is a short
   TEST value; check it before real deployment.
 

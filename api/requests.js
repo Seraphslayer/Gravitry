@@ -8,7 +8,21 @@ import {
   driverAppActive,
   recordAttendance,
   assignRide,
+  joinLine,
+  leaveLine,
+  getLine,
+  ridePriority,
 } from "./_dispatch.js";
+import {
+  terminalById,
+  distanceMeters,
+  AT_TERMINAL_METERS,
+} from "./_terminals.js";
+
+// true  = only the driver at the front of the terminal line may take the next
+//         ride at that terminal (others see their place in line).
+// false = any checked-in driver may take it.
+const LINE_STRICT = true;
 
 // Policy switch: may a passenger whose account is still pending staff
 // verification book rides? true = yes (temporary account works, flagged on the
@@ -231,6 +245,13 @@ export default async function handler(req, res) {
         claim: kioskClaim,
       });
 
+      const term = terminalById(o);
+      const atTerminal =
+        source === "kiosk" ||
+        (!!term &&
+          !!quote.pickup &&
+          distanceMeters(quote.pickup, term) <= AT_TERMINAL_METERS);
+
       const reqId = await nextId(db, "requests", "DR");
       const doc = {
         _id: reqId,
@@ -244,6 +265,10 @@ export default async function handler(req, res) {
         ...pricing,
         status: "pending",
         source,
+        // Passengers at the terminal (kiosk, or app pickup at the terminal) are
+        // served before app bookings made from elsewhere.
+        atTerminal,
+        priority: ridePriority({ source, atTerminal }),
         ts: new Date().toISOString(),
         ...identity,
       };
@@ -314,12 +339,20 @@ export default async function handler(req, res) {
       // Tapping at the kiosk counts as attendance at this terminal today.
       const attendance = await recordAttendance(db, driver, term, "nfc");
 
-      // "kiosk" sorts above "app" when descending, so kiosk rides come first,
-      // then oldest first within each group. Old requests with no source
-      // field sort last.
+      // Tapping also puts the driver in the terminal's line (if not already).
+      let line = await getLine(db, term);
+      if (!line.some((d) => d.driverId === driver._id)) {
+        await joinLine(db, driver, term, "nfc");
+        line = await getLine(db, term);
+      }
+      const position = line.findIndex((d) => d.driverId === driver._id) + 1;
+
+      // Passengers at the terminal first (priority 0), then app bookings from
+      // elsewhere; oldest first within each group. Old requests with no
+      // priority field are treated as priority 0.
       const pendingReq = await col.findOne(
         { status: "pending", origin: term },
-        { sort: { source: -1, ts: 1 } },
+        { sort: { priority: 1, ts: 1 } },
       );
       if (!pendingReq)
         // Nothing to accept: the tap was a check-in.
@@ -330,6 +363,13 @@ export default async function handler(req, res) {
           driver: driver.name,
           unit: driver.unit || null,
           terminal: term,
+          position,
+          lineLength: line.length,
+        });
+
+      if (LINE_STRICT && position > 1)
+        return res.status(409).json({
+          error: `Hindi mo pa turn. Ikaw ay #${position} sa pila, uunahin si ${line[0].name}.`,
         });
 
       const nowIso = new Date().toISOString();
@@ -382,6 +422,9 @@ export default async function handler(req, res) {
         return res
           .status(409)
           .json({ error: "That request was just taken. Try again." });
+
+      // The driver took a ride, so they leave the line.
+      await leaveLine(db, driver._id);
 
       if (trackable) {
         // Trip in progress: same bookkeeping as accepting in the Driver app.
@@ -543,6 +586,27 @@ export default async function handler(req, res) {
       const driver = await db.collection("drivers").findOne({ _id: driverId });
       if (!driver) return res.status(404).json({ error: "Driver not found" });
 
+      // Passengers at the terminal come first: a driver who is waiting in that
+      // terminal's line must serve them (by NFC tap) before an app booking from
+      // elsewhere. Drivers not in that line are not held back.
+      if (target && (target.priority ?? 0) === 1) {
+        const myLine = await db
+          .collection("terminal_line")
+          .findOne({ _id: driverId });
+        if (myLine && myLine.terminal === target.origin) {
+          const waitingHere = await col.countDocuments({
+            status: "pending",
+            origin: target.origin,
+            priority: 0,
+          });
+          if (waitingHere > 0)
+            return res.status(409).json({
+              error:
+                "May pasahero sa terminal na uunahin. I-tap ang NFC card mo sa kiosk.",
+            });
+        }
+      }
+
       // Block drivers whose license or franchise has expired.
       const expiredDocs = expiredDocsOf(driver);
       if (expiredDocs.length) {
@@ -573,6 +637,7 @@ export default async function handler(req, res) {
       await db
         .collection("drivers")
         .updateOne({ _id: driverId }, { $set: { status: "on_trip" } });
+      await leaveLine(db, driverId);
       await db
         .collection("tricycles")
         .updateOne(

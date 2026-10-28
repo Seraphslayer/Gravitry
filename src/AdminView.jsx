@@ -39,6 +39,7 @@ import {
   getReports,
   getAlerts,
   getAttendance,
+  getAllQueues,
   getDriverLocations,
   getStaffCards,
   createStaffCard,
@@ -2153,8 +2154,80 @@ function AttendanceTab({ drivers }) {
       minute: "2-digit",
     });
 
+  const [lines, setLines] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await getAllQueues();
+        if (alive) setLines(r);
+      } catch {
+        /* keep last known */
+      }
+    };
+    load();
+    const id = setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
   return (
     <div style={{ fontFamily: GR }}>
+      <h3 style={{ fontSize: 14, color: C.text, margin: "0 0 8px" }}>
+        Pila ngayon
+      </h3>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+          gap: 10,
+          marginBottom: 18,
+        }}
+      >
+        {lines.map((l) => (
+          <div
+            key={l.terminal}
+            style={{
+              background: C.white,
+              border: `1px solid ${C.border}`,
+              borderRadius: 12,
+              padding: 12,
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 13.5, color: C.text }}>
+              {getTerm(l.terminal)?.short || l.terminal}
+            </div>
+            <div
+              style={{ fontSize: 12.5, color: C.muted, margin: "2px 0 8px" }}
+            >
+              🛺 {l.drivers.length} tricycle · 🧍 {l.passengers.total} pasahero
+              {l.passengers.total > 0 &&
+                ` (${l.passengers.atTerminal} sa terminal, ${l.passengers.app} app)`}
+            </div>
+            {l.drivers.length === 0 ? (
+              <div style={{ fontSize: 12, color: C.muted }}>
+                Walang nakapila
+              </div>
+            ) : (
+              l.drivers.map((d) => (
+                <div
+                  key={d.driverId}
+                  style={{
+                    fontSize: 12.5,
+                    color: d.position === 1 ? C.green : C.text,
+                    fontWeight: d.position === 1 ? 800 : 500,
+                  }}
+                >
+                  #{d.position} {d.name} {d.unit ? `· ${d.unit}` : ""}
+                </div>
+              ))
+            )}
+          </div>
+        ))}
+      </div>
+
       <div
         style={{
           display: "flex",

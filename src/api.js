@@ -298,3 +298,24 @@ export const deleteStaffCard = (id) =>
   req(`staff?action=card-delete&id=${encodeURIComponent(id)}`, {
     method: "POST",
   });
+
+// -- Terminal line (queue) -------------------------------------------------
+// Public: drivers in line + passengers waiting at a terminal
+export const getQueue = (terminal) =>
+  req(`queue?terminal=${encodeURIComponent(terminal)}`);
+// Admin: every terminal's line
+export const getAllQueues = () => req("queue?action=all");
+// Driver: my place in line -> { terminal, position, lineLength } | null
+export const getMyLine = () => req("queue?action=mine");
+export const joinLine = (lat, lng) =>
+  req("queue?action=join", {
+    method: "POST",
+    body: JSON.stringify({ lat, lng }),
+  });
+export const leaveLine = () => req("queue?action=leave", { method: "POST" });
+// Staff panel: take a driver out of the line
+export const staffRemoveFromLine = (token, driverId) =>
+  staffReq(token, "staff?action=line-remove", {
+    method: "POST",
+    body: JSON.stringify({ driverId }),
+  });

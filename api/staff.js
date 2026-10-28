@@ -13,6 +13,8 @@ import {
   recordAttendance,
   assignRide,
   cancelPending,
+  joinLine,
+  leaveLine,
   phDate,
 } from "./_dispatch.js";
 
@@ -23,6 +25,8 @@ import {
 //   POST /api/staff?action=assign           { requestId, driverId } staff token or admin
 //   POST /api/staff?action=cancel           { requestId }           staff token or admin
 //   POST /api/staff?action=checkin          { driverId, terminal }  staff token or admin
+//   POST /api/staff?action=line-remove      { driverId }            staff token or admin
+//   POST /api/staff?action=line-remove      { driverId }            staff token or admin
 //   GET  /api/staff?action=attendance&date=YYYY-MM-DD               admin
 //   GET  /api/staff?action=cards                                    admin
 //   POST /api/staff?action=card-create      { name, nfcId, pin }    admin
@@ -60,11 +64,9 @@ export default async function handler(req, res) {
       const att = db.collection("staff_attempts");
       const rec = await att.findOne({ _id: nfcId });
       if (rec?.lockUntil && new Date(rec.lockUntil) > new Date())
-        return res
-          .status(429)
-          .json({
-            error: "Too many wrong PINs. This card is locked for a while.",
-          });
+        return res.status(429).json({
+          error: "Too many wrong PINs. This card is locked for a while.",
+        });
 
       const card = await db.collection("staff_cards").findOne({ _id: nfcId });
       const ok =
@@ -165,7 +167,19 @@ export default async function handler(req, res) {
         "manual",
         actor.by,
       );
+      // Checked in by staff = also in the terminal's line.
+      await joinLine(db, driver, terminal, "manual");
       return res.status(200).json({ ok: true, first: out.first });
+    }
+
+    // Staff take a driver out of the terminal line (left without taking a ride).
+    if (req.method === "POST" && action === "line-remove") {
+      const actor = getActor(req, res);
+      if (!actor) return;
+      if (!isNonEmptyString(body.driverId))
+        return res.status(400).json({ error: "Choose a driver" });
+      await leaveLine(db, body.driverId);
+      return res.status(200).json({ ok: true });
     }
 
     // ---- admin only --------------------------------------------------------

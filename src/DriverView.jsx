@@ -56,6 +56,7 @@ import {
 } from "./api.js";
 import { useAuth } from "./AuthContext.jsx";
 import IncidentButton from "./IncidentReport.jsx";
+import LineCard from "./LineCard.jsx";
 
 // Used as the driver's reference point when live GPS isn't available
 // (permission denied, no signal, desktop browser, etc).
@@ -1174,6 +1175,7 @@ export default function DriverView() {
 
         {online && !activeTrip && (
           <>
+            <LineCard position={myPosition} />
             <div
               style={{
                 display: "flex",
