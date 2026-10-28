@@ -3,39 +3,18 @@ import { getSessionFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
 import { tempAccessDeadline } from "./_settings.js";
 import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
+import {
+  expiredDocsOf,
+  driverAppActive,
+  recordAttendance,
+  assignRide,
+} from "./_dispatch.js";
 
 // Policy switch: may a passenger whose account is still pending staff
 // verification book rides? true = yes (temporary account works, flagged on the
 // request). false = they must wait until TODA staff approve them.
 // Rejected accounts can never book until they resubmit and get approved.
 const PENDING_CAN_BOOK = true;
-
-// Returns the names of a driver's expired documents (license / franchise).
-// The admin marks each one Valid or Expired (licenseStatus / franchiseStatus).
-// Older records without that fall back to their expiry date. A driver with ANY
-// expired document cannot take trips.
-function expiredDocsOf(driver) {
-  const today = new Date().toISOString().slice(0, 10);
-  const isExpired = (status, date) =>
-    status === "valid" || status === "expired"
-      ? status === "expired"
-      : !!date && date < today;
-  const out = [];
-  if (isExpired(driver.licenseStatus, driver.licenseExpiry))
-    out.push("license");
-  if (isExpired(driver.franchiseStatus, driver.franchiseExpiry))
-    out.push("franchise");
-  return out;
-}
-
-// Is the driver's Driver app switched to Online and still reporting in?
-// (Same rule as api/drivers.js: a heartbeat within the last 45 seconds.)
-function driverAppActive(driver) {
-  const lastSeen = driver.appLastSeen
-    ? new Date(driver.appLastSeen).getTime()
-    : 0;
-  return driver.appOnline === true && Date.now() - lastSeen < 45 * 1000;
-}
 
 // Kiosk rides must be accepted by an NFC card tap. Only one may be pending per
 // kiosk at a time; stale ones expire so the kiosk can never get stuck.
@@ -309,6 +288,14 @@ export default async function handler(req, res) {
 
       const driver = await db.collection("drivers").findOne({ nfcId });
       if (!driver) {
+        // An admin staff card opens the kiosk staff panel (PIN comes next).
+        const staffCard = await db
+          .collection("staff_cards")
+          .findOne({ _id: nfcId, active: true });
+        if (staffCard)
+          return res
+            .status(200)
+            .json({ staffCard: true, name: staffCard.name });
         await recordNfcIdFailure(db, nfcId);
         return res.status(404).json({ error: "Card not recognized" });
       }
@@ -324,6 +311,9 @@ export default async function handler(req, res) {
         });
       }
 
+      // Tapping at the kiosk counts as attendance at this terminal today.
+      const attendance = await recordAttendance(db, driver, term, "nfc");
+
       // "kiosk" sorts above "app" when descending, so kiosk rides come first,
       // then oldest first within each group. Old requests with no source
       // field sort last.
@@ -332,7 +322,15 @@ export default async function handler(req, res) {
         { sort: { source: -1, ts: 1 } },
       );
       if (!pendingReq)
-        return res.status(404).json({ error: "No pending requests right now" });
+        // Nothing to accept: the tap was a check-in.
+        return res.status(200).json({
+          checkedIn: true,
+          first: attendance.first,
+          at: attendance.at,
+          driver: driver.name,
+          unit: driver.unit || null,
+          terminal: term,
+        });
 
       const nowIso = new Date().toISOString();
 
@@ -500,6 +498,30 @@ export default async function handler(req, res) {
     }
 
     // POST /api/requests?id=DR-001&action=accept
+    // POST /api/requests?id=DR-001&action=override   { driverId, reason }
+    // MANUAL OVERRIDE (admin only): TODA staff assign a waiting ride to a
+    // driver by hand, for when the NFC tap can't happen (lost card, reader or
+    // kiosk offline). Same safety rules as a tap: expired license/franchise or
+    // a driver already on a trip is still refused. The ride is stamped with who
+    // did it and why, so it shows in the audit trail.
+    if (req.method === "POST" && id && action === "override") {
+      const session = requireSession(req, res, ["admin"]);
+      if (!session) return;
+      const { driverId, reason } = req.body || {};
+      if (!isNonEmptyString(driverId))
+        return res.status(400).json({ error: "Choose a driver" });
+      const why = typeof reason === "string" ? reason.trim().slice(0, 200) : "";
+      if (why.length < 3)
+        return res.status(400).json({ error: "Please give a short reason" });
+      const out = await assignRide(db, {
+        id,
+        driverId,
+        reason: why,
+        by: session.sub || "admin",
+      });
+      return res.status(out.code).json(out.body);
+    }
+
     if (req.method === "POST" && id && action === "accept") {
       // Only an authenticated driver can accept, and only as themself - the
       // driverId always comes from the session, never the request body, so

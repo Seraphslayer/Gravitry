@@ -68,3 +68,33 @@ export function getSessionFromReq(req) {
   if (!token) return null;
   return verifySession(token);
 }
+
+// ---- Kiosk staff token ------------------------------------------------------
+// After an admin taps their staff card at the kiosk and enters the PIN, the
+// server hands the kiosk a short-lived token (sent in the x-staff-token header,
+// never a cookie). It is signed with a different secret than login sessions, so
+// neither kind of token can be used as the other.
+const STAFF_TTL_SECONDS = 5 * 60;
+export const STAFF_TOKEN_SECONDS = STAFF_TTL_SECONDS;
+
+export function signStaffToken(payload) {
+  if (!SECRET) throw new Error("Missing JWT_SECRET environment variable");
+  return jwt.sign(
+    { ...payload, kind: "kiosk-staff" },
+    `${SECRET}:kiosk-staff`,
+    {
+      expiresIn: STAFF_TTL_SECONDS,
+    },
+  );
+}
+
+export function getStaffFromReq(req) {
+  const token = req.headers["x-staff-token"];
+  if (!token || typeof token !== "string" || !SECRET) return null;
+  try {
+    const p = jwt.verify(token, `${SECRET}:kiosk-staff`);
+    return p?.kind === "kiosk-staff" ? p : null;
+  } catch {
+    return null;
+  }
+}
