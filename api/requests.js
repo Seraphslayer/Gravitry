@@ -2,7 +2,12 @@ import { getDb } from "./_db.js";
 import { getSessionFromReq, getStaffFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
 import { tempAccessDeadline } from "./_settings.js";
-import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
+import {
+  verifyQuote,
+  buildPricing,
+  getTariff,
+  DISCOUNT_TYPES,
+} from "./_fare.js";
 import {
   expiredDocsOf,
   driverAppActive,
@@ -268,6 +273,7 @@ export default async function handler(req, res) {
         passenger: passengerDoc,
         source,
         claim: kioskClaim,
+        tariff: await getTariff(db),
       });
 
       const term = terminalById(o);
@@ -803,11 +809,9 @@ export default async function handler(req, res) {
       );
       const doc = result?.value ?? result;
       if (!doc)
-        return res
-          .status(404)
-          .json({
-            error: "Trip not found, not assigned to you, or already finished",
-          });
+        return res.status(404).json({
+          error: "Trip not found, not assigned to you, or already finished",
+        });
 
       if (doc.driverId) {
         await db

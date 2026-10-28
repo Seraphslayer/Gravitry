@@ -46,12 +46,10 @@ export const logout = () => req("auth?action=logout", { method: "POST" });
 export const getMe = () => req("auth?action=me");
 
 // -- Fares ----------------------------------------------------------------
-export const getFares = () => req("fares");
-export const updateFare = (origin, destination, fare) =>
-  req("fares", {
-    method: "PATCH",
-    body: JSON.stringify({ origin, destination, fare }),
-  });
+export const getTariff = () => req("fares");
+// Admin: save the tariff numbers -> same shape as getTariff()
+export const updateTariff = (tariff) =>
+  req("fares", { method: "PATCH", body: JSON.stringify(tariff) });
 
 // -- Drivers ----------------------------------------------------------------
 export const getDrivers = () => req("drivers");

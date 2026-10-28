@@ -5,6 +5,7 @@ import {
   cleanPoint,
   routeDistance,
   regularFareForMeters,
+  getTariff,
   buildPricing,
   signQuote,
 } from "./_fare.js";
@@ -43,7 +44,8 @@ export default async function handler(req, res) {
       pickup,
       dropoff,
     );
-    const regularFare = regularFareForMeters(meters);
+    const tariff = await getTariff(db);
+    const regularFare = regularFareForMeters(meters, tariff);
 
     let passenger = null;
     const session = getSessionFromReq(req);
@@ -59,6 +61,7 @@ export default async function handler(req, res) {
       passenger,
       source: passenger ? "app" : "kiosk",
       claim: null,
+      tariff,
     });
 
     const quoteToken = signQuote({
@@ -75,6 +78,7 @@ export default async function handler(req, res) {
       estimated,
       geometry,
       regularFare,
+      discountPercent: tariff.discountPercent,
       fare: pricing.fare,
       discountType: pricing.discountType || null,
       discountApplied: !!pricing.discountApplied,
