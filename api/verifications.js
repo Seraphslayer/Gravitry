@@ -54,10 +54,9 @@ export default async function handler(req, res) {
 
     // GET /api/verifications?action=stats - user counts for the dashboard
     if (req.method === "GET" && action === "stats") {
-      const [total, pending, verified, rejected, drivers] = await Promise.all([
+      const [total, pending, rejected, drivers] = await Promise.all([
         passengers.countDocuments({}),
         passengers.countDocuments({ status: "pending" }),
-        passengers.countDocuments({ status: { $in: ["verified", null] } }),
         passengers.countDocuments({ status: "rejected" }),
         db.collection("drivers").countDocuments({}),
       ]);

@@ -1,5 +1,6 @@
 import { getDb } from "./_db.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
+import { getSessionFromReq } from "./_auth.js";
 
 // ---------------------------------------------------------------------------
 // "All-rounder" units
@@ -62,7 +63,12 @@ export default async function handler(req, res) {
 
     if (req.method === "GET") {
       const docs = await col.find({}).toArray();
-      return res.status(200).json(docs);
+      // Rental details (who rents a unit, for how long) are for TODA staff.
+      if (getSessionFromReq(req)?.role === "admin")
+        return res.status(200).json(docs);
+      return res
+        .status(200)
+        .json(docs.map(({ rental: _r, rentalHistory: _h, ...rest }) => rest));
     }
 
     if (req.method === "POST") {

@@ -58,7 +58,6 @@ import {
   fmtKm,
   pickupPoint,
   dropoffPoint,
-  toLatLngs,
   etaMinutes,
   remainingAhead,
   useLiveRoute,

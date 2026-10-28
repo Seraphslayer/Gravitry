@@ -1,6 +1,6 @@
 import { getDb } from "./_db.js";
 import { requireSession } from "./_authz.js";
-import { hashPassword } from "./_auth.js";
+import { hashPassword, getSessionFromReq } from "./_auth.js";
 import { randomInt } from "node:crypto";
 
 // Fields nobody but the login system should ever see or be able to overwrite
@@ -275,6 +275,14 @@ export default async function handler(req, res) {
       // Never expose passwordHash or login username to the frontend - the
       // driver list is read by the kiosk, passenger app, and admin dashboard,
       // none of which need credentials.
+      //
+      // The NFC card number is a driver's "password" at the kiosk, so only the
+      // admin may see it (with the license number and phone). Everyone else
+      // gets the safety record: name, unit, plate, status, rating.
+      const isAdmin = getSessionFromReq(req)?.role === "admin";
+      const hidden = isAdmin
+        ? {}
+        : { nfcId: 0, license: 0, contact: 0, ratingSum: 0 };
       const docs = await col
         .find(
           {},
@@ -284,6 +292,7 @@ export default async function handler(req, res) {
               username: 0,
               appLocation: 0,
               lastLocation: 0,
+              ...hidden,
             },
           },
         )
@@ -309,6 +318,26 @@ export default async function handler(req, res) {
 
       if (Object.keys(patch).length === 0) {
         return res.status(400).json({ error: "No valid fields to update" });
+      }
+      if ("nfcId" in patch) {
+        const nfc = patch.nfcId == null ? "" : String(patch.nfcId).trim();
+        if (nfc && !/^[0-9]{6,20}$/.test(nfc))
+          return res
+            .status(400)
+            .json({ error: "Card number must be 6-20 digits" });
+        if (nfc) {
+          const taken =
+            (await col.findOne({ nfcId: nfc, _id: { $ne: id } })) ||
+            (await db.collection("staff_cards").findOne({ _id: nfc }));
+          if (taken)
+            return res
+              .status(409)
+              .json({ error: "That NFC card is already assigned" });
+          patch.nfcId = nfc;
+        } else {
+          delete patch.nfcId;
+          await col.updateOne({ _id: id }, { $unset: { nfcId: "" } });
+        }
       }
 
       await col.updateOne({ _id: id }, { $set: patch });

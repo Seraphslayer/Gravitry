@@ -1,5 +1,5 @@
 import { getDb } from "./_db.js";
-import { getSessionFromReq } from "./_auth.js";
+import { getSessionFromReq, getStaffFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
 import { tempAccessDeadline } from "./_settings.js";
 import { verifyQuote, buildPricing, DISCOUNT_TYPES } from "./_fare.js";
@@ -98,6 +98,31 @@ async function withinGlobalNfcRate(db) {
     .collection("nfc_rate_limit")
     .updateOne({ _id: "global" }, { $inc: { count: 1 } });
   return true;
+}
+
+// Who may see a ride's passenger details (name, id, exact map points)? TODA
+// staff (admin), drivers, and the kiosk staff panel. Everyone else (the public
+// kiosk screen, other passengers) gets the trimmed view below.
+function canSeePassengerDetails(req) {
+  if (getStaffFromReq(req)) return true;
+  const s = getSessionFromReq(req);
+  return s?.role === "admin" || s?.role === "driver";
+}
+
+// A ride without who booked it or where exactly they stand. Ride ids are
+// sequential (DR-001, DR-002...), so the public lookup must not leak these.
+function publicView(doc) {
+  const {
+    passengerId: _a,
+    passengerName: _b,
+    passengerStatus: _c,
+    discountConfirmedBy: _d,
+    manualOverride: _e,
+    ...rest
+  } = doc;
+  if (rest.pickup) rest.pickup = { label: rest.pickup.label ?? null };
+  if (rest.dropoff) rest.dropoff = { label: rest.dropoff.label ?? null };
+  return rest;
 }
 
 export default async function handler(req, res) {
@@ -476,7 +501,10 @@ export default async function handler(req, res) {
       }
 
       const docs = await col.find(filter).sort({ ts: -1 }).toArray();
-      return res.status(200).json(docs);
+      // Own history (passengerId) was already checked above; any other list is
+      // trimmed unless staff or a driver is asking.
+      const full = passengerId || canSeePassengerDetails(req);
+      return res.status(200).json(full ? docs : docs.map(publicView));
     }
 
     // GET /api/requests?id=DR-001  - single lookup (used by kiosk/passenger
@@ -485,7 +513,12 @@ export default async function handler(req, res) {
     if (req.method === "GET" && id && !action) {
       const doc = await col.findOne({ _id: id });
       if (!doc) return res.status(404).json({ error: "Request not found" });
-      return res.status(200).json(doc);
+      const me = getSessionFromReq(req);
+      const owner =
+        me?.role === "passenger" && me.passengerId === doc.passengerId;
+      return res
+        .status(200)
+        .json(owner || canSeePassengerDetails(req) ? doc : publicView(doc));
     }
 
     // GET /api/requests?id=DR-001&action=track
@@ -585,6 +618,10 @@ export default async function handler(req, res) {
 
       const driver = await db.collection("drivers").findOne({ _id: driverId });
       if (!driver) return res.status(404).json({ error: "Driver not found" });
+      if (driver.status === "on_trip")
+        return res
+          .status(409)
+          .json({ error: "You already have an active trip" });
 
       // Passengers at the terminal come first: a driver who is waiting in that
       // terminal's line must serve them (by NFC tap) before an app booking from
@@ -751,10 +788,12 @@ export default async function handler(req, res) {
       const session = requireSession(req, res, ["driver", "admin"]);
       if (!session) return;
 
+      // Only a ride in progress can be completed - otherwise a second tap (or a
+      // cancelled / already recorded ride) would count the trip twice.
       const filter =
         session.role === "admin"
-          ? { _id: id }
-          : { _id: id, driverId: session.driverId };
+          ? { _id: id, status: "dispatched" }
+          : { _id: id, driverId: session.driverId, status: "dispatched" };
       const result = await col.findOneAndUpdate(
         filter,
         {
@@ -766,7 +805,9 @@ export default async function handler(req, res) {
       if (!doc)
         return res
           .status(404)
-          .json({ error: "Request not found, or not assigned to you" });
+          .json({
+            error: "Trip not found, not assigned to you, or already finished",
+          });
 
       if (doc.driverId) {
         await db

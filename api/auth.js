@@ -129,11 +129,9 @@ export default async function handler(req, res) {
       // Complete name: first + last are required; middle name is required
       // unless the person says they have none.
       if (!tidy(firstName) || !tidy(lastName)) {
-        return res
-          .status(400)
-          .json({
-            error: "Please enter your complete name (first and last name)",
-          });
+        return res.status(400).json({
+          error: "Please enter your complete name (first and last name)",
+        });
       }
       if (noMiddleName !== true && !tidy(middleName)) {
         return res.status(400).json({
@@ -228,9 +226,15 @@ export default async function handler(req, res) {
           error: "Too many signups right now. Try again in a few minutes.",
         });
       }
-      const existing = await db
-        .collection("passengers")
-        .findOne({ username: username.trim() });
+      // Usernames are shared by admins, drivers and passengers at login, so a
+      // new passenger can't take a name another account already uses.
+      let existing = null;
+      for (const c of ["passengers", "drivers", "users"]) {
+        if (await db.collection(c).findOne({ username: username.trim() })) {
+          existing = true;
+          break;
+        }
+      }
       if (existing) {
         return res
           .status(409)
