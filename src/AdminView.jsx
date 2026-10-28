@@ -2569,31 +2569,42 @@ function beep() {
 // Red banner on every admin tab while an SOS is unresolved. Polls every 3 s,
 // sounds the alarm every 4 s until the SOS is acknowledged, and turns the
 // browser tab title into a flashing warning so it is noticed from another tab.
-function SosBanner({ onOpen }) {
+function SosBanner({ onOpen, onChanged }) {
   const [alerts, setAlerts] = useState([]);
   const [muted, setMuted] = useState(false);
   const [soundOk, setSoundOk] = useState(true);
   const [, setNow] = useState(0);
 
+  const load = useCallback(async () => {
+    try {
+      setAlerts(await getAlerts());
+    } catch {
+      /* keep last known */
+    }
+  }, []);
+
   useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const a = await getAlerts();
-        if (alive) setAlerts(a);
-      } catch {
-        /* keep last known */
-      }
-    };
     load();
     const id = setInterval(load, 3000);
     const tk = setInterval(() => setNow((n) => n + 1), 1000);
     return () => {
-      alive = false;
       clearInterval(id);
       clearInterval(tk);
     };
-  }, []);
+  }, [load]);
+
+  const [busy, setBusy] = useState("");
+  const act = async (id, action, note) => {
+    setBusy(id);
+    try {
+      await updateReport(id, action, note);
+    } catch {
+      /* the next refresh shows the real state */
+    }
+    setBusy("");
+    load();
+    onChanged?.();
+  };
 
   const sos = alerts.filter((a) => a.kind === "sos");
   const unanswered = sos.filter((a) => a.status === "open");
@@ -2634,7 +2645,11 @@ function SosBanner({ onOpen }) {
       0,
       Math.round((Date.now() - new Date(iso).getTime()) / 1000),
     );
-    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    if (s < 86400)
+      return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
   };
 
   return (
@@ -2721,6 +2736,47 @@ function SosBanner({ onOpen }) {
             </>
           )}
           {!a.hasLocation && " · no location"}
+          <span style={{ display: "inline-flex", gap: 6, marginLeft: 10 }}>
+            {a.status === "open" && (
+              <button
+                disabled={busy === a._id}
+                onClick={() => act(a._id, "ack", "Papunta na ang tulong")}
+                style={{
+                  padding: "3px 10px",
+                  borderRadius: 6,
+                  border: "none",
+                  background: "#fff",
+                  color: "#B91C1C",
+                  fontFamily: GR,
+                  fontWeight: 800,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Papunta na kami
+              </button>
+            )}
+            <button
+              disabled={busy === a._id}
+              onClick={() => {
+                const note = window.prompt("Resolution note (optional)", "");
+                if (note !== null) act(a._id, "resolve", note);
+              }}
+              style={{
+                padding: "3px 10px",
+                borderRadius: 6,
+                border: "1px solid #fff",
+                background: "transparent",
+                color: "#fff",
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Resolve
+            </button>
+          </span>
         </div>
       ))}
       {unanswered.length > 0 && !soundOk && !muted && (
@@ -3722,12 +3778,6 @@ function UsersTab() {
     } catch {
       /* keep last known list */
     }
-    try {
-      const r = await getReports();
-      setReports(r);
-    } catch {
-      /* keep last known reports */
-    }
     setLoading(false);
   }, []);
   useEffect(() => {
@@ -4181,6 +4231,11 @@ export default function AdminView() {
     } catch {
       /* keep last known counts */
     }
+    try {
+      setReports(await getReports());
+    } catch {
+      /* keep last known reports */
+    }
     setLoading(false);
   }, []);
 
@@ -4216,7 +4271,7 @@ export default function AdminView() {
 
   return (
     <div style={{ height: "100%", background: C.surface, overflowY: "auto" }}>
-      <SosBanner onOpen={() => setTab("incidents")} />
+      <SosBanner onOpen={() => setTab("incidents")} onChanged={loadAll} />
       <div
         style={{
           background: C.navy,

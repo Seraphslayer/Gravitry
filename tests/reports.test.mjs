@@ -146,6 +146,32 @@ test("SOS and incident reports", async (t) => {
       404,
     );
   });
+  await t.test(
+    "the reporter can follow the status of their own SOS",
+    async () => {
+      const made = await post({ action: "create" }, { kind: "sos" }, D);
+      const id = made.body.id;
+      const status = () =>
+        call(reports, { query: { id, action: "status" }, cookie: D });
+      assert.equal((await status()).body.status, "open");
+      await post({ id, action: "ack" }, {}, A);
+      const acked = (await status()).body;
+      assert.equal(acked.status, "acknowledged");
+      assert.equal(acked.acknowledgedNote, "Papunta na ang tulong");
+      await post({ id, action: "resolve" }, { note: "ok" }, A);
+      assert.equal((await status()).body.status, "resolved");
+      // someone else's report is not visible
+      assert.equal(
+        (await call(reports, { query: { id, action: "status" }, cookie: P }))
+          .status,
+        404,
+      );
+      assert.equal(
+        (await call(reports, { query: { id, action: "status" } })).status,
+        401,
+      );
+    },
+  );
   await t.test("rate limit (6 per 10 min)", async () => {
     let last;
     for (let i = 0; i < 8; i++)
