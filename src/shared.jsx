@@ -66,32 +66,8 @@ export const DISCOUNTS = {
 };
 export const DISCOUNT_KEYS = Object.keys(DISCOUNTS);
 export const discountLabel = (type) => DISCOUNTS[type]?.label || null;
-export const discountedFare = (regular) => Math.round(regular * 0.8);
-
-// ── Tariff (display only) ──────────────────────────────────────────────────
-// The real fare is worked out on the server from the road distance between the
-// exact pickup and drop-off points (api/_fare.js). This copy only feeds the
-// tariff table shown to admins - keep the two in sync.
-export const TARIFF = {
-  rows: [
-    {
-      label: "First kilometer (up to 1 km)",
-      regular: 15,
-      special: 45,
-      discounted: 12,
-      discountedSpecial: 36,
-    },
-    {
-      label: "Succeeding 2 km (over 1 km, up to 3 km)",
-      regular: 20,
-      special: 60,
-      discounted: 16,
-      discountedSpecial: 48,
-    },
-  ],
-  beyond:
-    "Then +₱5 for every additional 2 km (regular fare): over 3 km up to 5 km = ₱25, over 5 km up to 7 km = ₱30, and so on. Special trip and discounted fares follow the same steps.",
-};
+export const discountedFare = (regular, pct = 20) =>
+  Math.round((regular * (100 - pct)) / 100);
 
 // ── Places: exact points picked on the map ─────────────────────────────────
 // A "place" is { lat, lng, label } - a searched address, a dropped pin, the

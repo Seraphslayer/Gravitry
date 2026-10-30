@@ -15,7 +15,6 @@ import {
   DISCOUNTS,
   DISCOUNT_KEYS,
   discountLabel,
-  TARIFF,
   pickupLabel,
   dropoffLabel,
   fmtKm,
@@ -38,6 +37,8 @@ import {
   getUserStats,
   getReports,
   getAlerts,
+  getTariff,
+  updateTariff,
   getAttendance,
   getAllQueues,
   getDriverLocations,
@@ -1597,18 +1598,241 @@ function TricyclesTab({ tricycles, drivers, loading, onRefresh }) {
   );
 }
 
-// The fare is worked out automatically from the road distance between the
-// exact pickup and drop-off points (see api/_fare.js), so there is no
-// per-terminal fare matrix to edit any more. This tab just shows the tariff.
+// The tariff numbers. Admin edits them here; every fare a passenger is quoted
+// uses them from the next quote on (see api/_fare.js, api/fares.js).
+const TARIFF_FIELDS = [
+  ["firstKm", "First distance (km)", "km"],
+  ["firstKmFare", "Fare for the first distance", "\u20B1"],
+  ["stepKm", "Then, for every additional (km)", "km"],
+  ["stepFare", "add this much", "\u20B1"],
+  ["discountPercent", "Student / Senior / PWD discount", "%"],
+  ["specialMultiplier", "Special trip = regular fare x", "x"],
+];
+
 function TariffTab() {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState({});
+  const [err, setErr] = useNotice("");
+  const [saved, setSaved] = useNotice("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await getTariff();
+      setData(d);
+      setForm(
+        Object.fromEntries(
+          Object.entries(d.tariff).map(([k, v]) => [k, String(v)]),
+        ),
+      );
+    } catch (e) {
+      setErr(e.message || "Could not load the tariff");
+    }
+  }, [setErr]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const changed =
+    data && TARIFF_FIELDS.some(([k]) => Number(form[k]) !== data.tariff[k]);
+
+  const save = async () => {
+    const next = {};
+    for (const [k, label] of TARIFF_FIELDS) {
+      const n = Number(form[k]);
+      if (form[k] === "" || !Number.isFinite(n)) {
+        setErr(`${label}: enter a number`);
+        return;
+      }
+      next[k] = n;
+    }
+    if (
+      !window.confirm(
+        "Save the new tariff? Passengers will be quoted these fares from now on. Rides already booked keep their fare.",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const d = await updateTariff(next);
+      setData(d);
+      setForm(
+        Object.fromEntries(
+          Object.entries(d.tariff).map(([k, v]) => [k, String(v)]),
+        ),
+      );
+      setSaved("Tariff saved");
+    } catch (e) {
+      setErr(String(e.message || e).replace(/^API [^:]*failed: /, ""));
+    }
+    setBusy(false);
+  };
+
   const cols = [
     ["regular", "Regular (per person)"],
     ["special", "Special trip"],
     ["discounted", "Discounted (per person)"],
     ["discountedSpecial", "Discounted special trip"],
   ];
+  const th = {
+    padding: "8px 12px",
+    textAlign: "center",
+    fontSize: 11,
+    fontFamily: GR,
+    fontWeight: 600,
+    color: C.muted,
+    textTransform: "uppercase",
+  };
   return (
     <div>
+      <div
+        style={{
+          background: C.white,
+          borderRadius: 12,
+          border: `1px solid ${C.border}`,
+          padding: "14px 16px",
+          marginBottom: 12,
+        }}
+      >
+        <div
+          style={{
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 14,
+            color: C.text,
+            marginBottom: 10,
+          }}
+        >
+          Edit the TODA tariff
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+            gap: 10,
+          }}
+        >
+          {TARIFF_FIELDS.map(([k, label, unit]) => (
+            <label
+              key={k}
+              style={{ fontFamily: GR, fontSize: 12, color: C.muted }}
+            >
+              {label}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginTop: 4,
+                }}
+              >
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="any"
+                  value={form[k] ?? ""}
+                  onChange={(e) => setForm({ ...form, [k]: e.target.value })}
+                  style={{
+                    width: 110,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: `1px solid ${C.border}`,
+                    fontFamily: GR,
+                    fontSize: 14,
+                  }}
+                />
+                <span style={{ fontWeight: 700 }}>{unit}</span>
+              </div>
+            </label>
+          ))}
+        </div>
+        {err && (
+          <div
+            style={{
+              color: "#B91C1C",
+              fontFamily: GR,
+              fontSize: 13,
+              marginTop: 10,
+            }}
+          >
+            {err}
+          </div>
+        )}
+        {saved && (
+          <div
+            style={{
+              color: C.greenDark,
+              fontFamily: GR,
+              fontSize: 13,
+              marginTop: 10,
+            }}
+          >
+            {saved}
+          </div>
+        )}
+        <div
+          style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}
+        >
+          <button
+            onClick={save}
+            disabled={busy || !changed}
+            style={{
+              padding: "9px 18px",
+              borderRadius: 10,
+              border: "none",
+              background: C.navy,
+              color: "#fff",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 13,
+              cursor: "pointer",
+              opacity: busy || !changed ? 0.5 : 1,
+            }}
+          >
+            {busy ? "Saving..." : "Save tariff"}
+          </button>
+          {data && (
+            <button
+              onClick={() =>
+                setForm(
+                  Object.fromEntries(
+                    Object.entries(data.defaults).map(([k, v]) => [
+                      k,
+                      String(v),
+                    ]),
+                  ),
+                )
+              }
+              style={{
+                padding: "9px 14px",
+                borderRadius: 10,
+                border: `1px solid ${C.border}`,
+                background: C.white,
+                fontFamily: GR,
+                fontWeight: 600,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              Fill in the original TODA numbers
+            </button>
+          )}
+        </div>
+        {data?.updatedAt && (
+          <p
+            style={{
+              margin: "10px 0 0",
+              fontSize: 11.5,
+              color: C.muted,
+              fontFamily: IN,
+            }}
+          >
+            Last changed {new Date(data.updatedAt).toLocaleString()}
+          </p>
+        )}
+      </div>
+
       <div
         style={{
           background: C.white,
@@ -1632,46 +1856,25 @@ function TariffTab() {
               color: C.text,
             }}
           >
-            Official TODA Tariff
+            Tariff now in force
           </span>
         </div>
         <div style={{ overflowX: "auto", padding: "8px 0" }}>
           <table style={{ borderCollapse: "collapse", minWidth: 560 }}>
             <thead>
               <tr>
-                <th
-                  style={{
-                    padding: "8px 16px",
-                    textAlign: "left",
-                    fontSize: 11,
-                    fontFamily: GR,
-                    fontWeight: 600,
-                    color: C.muted,
-                    textTransform: "uppercase",
-                  }}
-                >
+                <th style={{ ...th, padding: "8px 16px", textAlign: "left" }}>
                   Distance
                 </th>
                 {cols.map(([k, label]) => (
-                  <th
-                    key={k}
-                    style={{
-                      padding: "8px 12px",
-                      textAlign: "center",
-                      fontSize: 11,
-                      fontFamily: GR,
-                      fontWeight: 600,
-                      color: C.muted,
-                      textTransform: "uppercase",
-                    }}
-                  >
+                  <th key={k} style={th}>
                     {label}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {TARIFF.rows.map((row, i) => (
+              {(data?.rows || []).map((row, i) => (
                 <tr
                   key={row.label}
                   style={{
@@ -1720,14 +1923,13 @@ function TariffTab() {
             fontFamily: IN,
           }}
         >
-          {TARIFF.beyond}
+          and so on, adding the same amount for every additional step.
         </p>
       </div>
       <p style={{ fontSize: 11.5, color: C.muted, fontFamily: IN, margin: 0 }}>
-        Fares are calculated automatically from the road distance between the
-        exact pickup and drop-off points the passenger picked on the map. The
-        apps currently offer the regular per-person fare and the student /
-        senior citizen / PWD discount. Special trips are not offered yet.
+        Fares are calculated from the road distance between the exact pickup and
+        drop-off points on the map. The apps currently offer the regular
+        per-person fare and the discount. Special trips are not offered yet.
       </p>
     </div>
   );

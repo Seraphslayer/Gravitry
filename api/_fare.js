@@ -14,33 +14,109 @@ import jwt from "jsonwebtoken";
 //     over 3  - 5 km ..... PHP 25
 //     over 5  - 7 km ..... PHP 30   ... and so on, +PHP 5 every 2 km
 //
-// If the TODA charges differently, only these four numbers need to change.
-const FIRST_KM = 1;
-const FIRST_KM_FARE = 15;
-const STEP_KM = 2;
-const STEP_FARE = 5;
+// The numbers are the TODA tariff and the ADMIN can change them (Tariff tab ->
+// /api/fares). DEFAULT_TARIFF is only used until the admin saves their own.
+//   firstKm / firstKmFare : the first kilometers cost this much
+//   stepKm / stepFare     : then +stepFare for every additional stepKm
+//   discountPercent       : student / senior / PWD discount
+//   specialMultiplier     : special trip = regular x this
+export const DEFAULT_TARIFF = {
+  firstKm: 1,
+  firstKmFare: 15,
+  stepKm: 2,
+  stepFare: 5,
+  discountPercent: 20,
+  specialMultiplier: 3,
+};
 
-export function regularFareForMeters(meters) {
-  const km = meters / 1000;
-  if (km <= FIRST_KM) return FIRST_KM_FARE;
-  return FIRST_KM_FARE + STEP_FARE * Math.ceil((km - FIRST_KM) / STEP_KM);
+const LIMITS = {
+  firstKm: [0.5, 20],
+  firstKmFare: [1, 1000],
+  stepKm: [0.5, 20],
+  stepFare: [0.5, 500],
+  discountPercent: [0, 50],
+  specialMultiplier: [1, 10],
+};
+export const TARIFF_LABELS = {
+  firstKm: "First distance (km)",
+  firstKmFare: "First distance fare",
+  stepKm: "Every additional (km)",
+  stepFare: "Additional fare",
+  discountPercent: "Discount (%)",
+  specialMultiplier: "Special trip multiplier",
+};
+
+// Checks an admin's tariff. -> { tariff } or { error }
+export function cleanTariff(input) {
+  const out = {};
+  for (const [k, [min, max]] of Object.entries(LIMITS)) {
+    const v = input?.[k];
+    if (typeof v !== "number" || !Number.isFinite(v))
+      return { error: `${TARIFF_LABELS[k]} must be a number` };
+    if (v < min || v > max)
+      return { error: `${TARIFF_LABELS[k]} must be between ${min} and ${max}` };
+    out[k] = Math.round(v * 100) / 100;
+  }
+  return { tariff: out };
 }
 
-// Students, senior citizens and PWDs pay 80% of the regular fare
-// (15 -> 12, 20 -> 16). Keep in sync with discountedFare() in src/shared.jsx.
+// The tariff in force: what the admin saved, else the defaults.
+export async function getTariff(db) {
+  const doc = await db.collection("settings").findOne({ _id: "tariff" });
+  const { tariff } = cleanTariff({ ...DEFAULT_TARIFF, ...(doc?.value || {}) });
+  return tariff || DEFAULT_TARIFF;
+}
+
+export function regularFareForMeters(meters, t = DEFAULT_TARIFF) {
+  const km = meters / 1000;
+  if (km <= t.firstKm) return t.firstKmFare;
+  return t.firstKmFare + t.stepFare * Math.ceil((km - t.firstKm) / t.stepKm);
+}
+
+// The table shown to admins and passengers, worked out from the numbers above.
+export function tariffTable(t = DEFAULT_TARIFF, steps = 4) {
+  const money = (n) => Math.round(n * 100) / 100;
+  const row = (label, regular) => ({
+    label,
+    regular: money(regular),
+    special: money(regular * t.specialMultiplier),
+    discounted: discountedFare(regular, t.discountPercent),
+    discountedSpecial: discountedFare(
+      regular * t.specialMultiplier,
+      t.discountPercent,
+    ),
+  });
+  const rows = [row(`First ${t.firstKm} km`, t.firstKmFare)];
+  for (let i = 1; i <= steps; i++) {
+    const from = money(t.firstKm + (i - 1) * t.stepKm);
+    const to = money(t.firstKm + i * t.stepKm);
+    rows.push(
+      row(`Over ${from} km, up to ${to} km`, t.firstKmFare + i * t.stepFare),
+    );
+  }
+  return rows;
+}
+
+// Students, senior citizens and PWDs get the discount below off the regular
+// fare. Whole pesos.
 export const DISCOUNT_TYPES = ["student", "senior", "pwd"];
-export const discountedFare = (regular) => Math.round(regular * 0.8);
+export const discountedFare = (regular, pct = DEFAULT_TARIFF.discountPercent) =>
+  Math.round((regular * (100 - pct)) / 100);
 
 // What a passenger is charged, given the regular fare for the trip.
 //  - logged-in passenger whose discount staff verified -> discount applied
 //  - kiosk guest claiming a discount -> discount PENDING until the driver
 //    checks the ID and taps their NFC card
-export function buildPricing(regularFare, { passenger, source, claim }) {
+export function buildPricing(
+  regularFare,
+  { passenger, source, claim, tariff = DEFAULT_TARIFF },
+) {
+  const pct = tariff.discountPercent;
   if (passenger) {
     const verified = (passenger.status || "verified") === "verified";
     if (verified && DISCOUNT_TYPES.includes(passenger.discountType)) {
       return {
-        fare: discountedFare(regularFare),
+        fare: discountedFare(regularFare, pct),
         regularFare,
         discountType: passenger.discountType,
         discountApplied: true,
@@ -50,7 +126,7 @@ export function buildPricing(regularFare, { passenger, source, claim }) {
   }
   if (source === "kiosk" && claim && DISCOUNT_TYPES.includes(claim)) {
     return {
-      fare: discountedFare(regularFare),
+      fare: discountedFare(regularFare, pct),
       regularFare,
       discountClaim: claim,
       discountPending: true,

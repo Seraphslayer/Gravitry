@@ -1,66 +1,55 @@
 import { getDb } from "./_db.js";
-import { requireSession, isNonEmptyString } from "./_authz.js";
+import { requireSession } from "./_authz.js";
+import {
+  getTariff,
+  cleanTariff,
+  tariffTable,
+  DEFAULT_TARIFF,
+} from "./_fare.js";
 
-// Official TODA fare matrix. The regular per-person fare is the only value
-// stored per route; every other column of the posted matrix follows from it:
-//   special trip       = 3 x regular   (15 -> 45, 20 -> 60)
-//   discounted         = 80% of regular (15 -> 12, 20 -> 16)  student/senior/PWD
-//   discounted special = 80% of special (45 -> 36, 60 -> 48)
-// So editing one number in the admin Fares tab keeps all four columns correct.
-function ratesFor(regular) {
+// The official TODA tariff.
+//   GET   /api/fares   public   the numbers in force + the table worked out from them
+//   PATCH /api/fares   admin    { firstKm, firstKmFare, stepKm, stepFare,
+//                                discountPercent, specialMultiplier }
+// Every fare a passenger is quoted comes from these numbers (see api/_fare.js),
+// so a change here applies to the next quote right away. Rides already booked
+// keep the fare they were quoted. Each change is kept in `history`.
+
+async function view(db) {
+  const tariff = await getTariff(db);
+  const doc = await db.collection("settings").findOne({ _id: "tariff" });
   return {
-    regular,
-    special: regular * 3,
-    discounted: Math.round(regular * 0.8),
-    discountedSpecial: Math.round(regular * 3 * 0.8),
+    tariff,
+    defaults: DEFAULT_TARIFF,
+    rows: tariffTable(tariff),
+    updatedAt: doc?.updatedAt || null,
+    updatedBy: doc?.updatedBy || null,
   };
 }
 
 export default async function handler(req, res) {
   try {
     const db = await getDb();
-    const col = db.collection("fares");
 
-    if (req.method === "GET") {
-      const docs = await col.find({}).toArray();
-      const map = {};
-      // Default: { "T1-T2": 15 } (regular per-person fare), exactly as before,
-      // so the existing kiosk / passenger / admin screens keep working.
-      // With ?full=1: { "T1-T2": { regular, special, discounted, discountedSpecial } }
-      const full = req.query.full === "1";
-      for (const d of docs) map[d._id] = full ? ratesFor(d.fare) : d.fare;
-      return res.status(200).json(map);
-    }
+    if (req.method === "GET") return res.status(200).json(await view(db));
 
     if (req.method === "PATCH") {
-      // Only TODA admins can change official fares.
       const session = requireSession(req, res, ["admin"]);
       if (!session) return;
-
-      const { origin, destination, fare } = req.body || {};
-      if (!isNonEmptyString(origin) || !isNonEmptyString(destination)) {
-        return res
-          .status(400)
-          .json({ error: "origin and destination are required" });
-      }
-      if (typeof fare !== "number" || !Number.isFinite(fare) || fare <= 0) {
-        return res
-          .status(400)
-          .json({ error: "fare must be a positive number" });
-      }
-
-      const key = `${origin}-${destination}`;
-      await col.updateOne(
-        { _id: key },
+      const { tariff, error } = cleanTariff(req.body);
+      if (error) return res.status(400).json({ error });
+      const now = new Date().toISOString();
+      await db.collection("settings").updateOne(
+        { _id: "tariff" },
         {
-          $set: { origin, destination, fare, updatedAt: new Date() },
+          $set: { value: tariff, updatedAt: now, updatedBy: session.sub },
           $push: {
-            history: { fare, changedAt: new Date(), changedBy: session.sub },
+            history: { value: tariff, changedAt: now, changedBy: session.sub },
           },
         },
         { upsert: true },
       );
-      return res.status(200).json({ key, fare, rates: ratesFor(fare) });
+      return res.status(200).json(await view(db));
     }
 
     return res.status(405).json({ error: "Method not allowed" });

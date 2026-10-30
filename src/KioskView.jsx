@@ -185,7 +185,9 @@ export default function KioskView() {
   const pickupPlace = terminalPlace(originTerm);
 
   const regularFare = quote?.regularFare ?? 0;
-  const fare = discountClaim ? discountedFare(regularFare) : regularFare;
+  const fare = discountClaim
+    ? discountedFare(regularFare, quote?.discountPercent)
+    : regularFare;
 
   // Passengers queue at the single kiosk: several rides may wait for a driver's
   // card tap (the server enforces the same limit). Each tap takes the oldest.
