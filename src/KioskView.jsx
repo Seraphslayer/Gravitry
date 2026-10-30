@@ -522,7 +522,7 @@ export default function KioskView() {
     (step === "fare" || step === "waiting" || step === "success") && dest;
 
   return (
-    <div className="kiosk-shell">
+    <div className="kiosk-shell kiosk-big">
       <div
         style={{
           position: "absolute",
@@ -1039,11 +1039,15 @@ export default function KioskView() {
             </div>
 
             {showKb && (
-              <OnScreenKeyboard
-                value={query}
-                onChange={setQuery}
-                onDone={() => setShowKb(false)}
-              />
+              // The keys are already big; scale them back a little so the
+              // whole keyboard fits on screen next to the search box.
+              <div style={{ zoom: 0.78 }}>
+                <OnScreenKeyboard
+                  value={query}
+                  onChange={setQuery}
+                  onDone={() => setShowKb(false)}
+                />
+              </div>
             )}
 
             {searching && (
