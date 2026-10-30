@@ -31,7 +31,7 @@ export default function LineStatus({ terminal }) {
     <div
       style={{
         position: "absolute",
-        top: "calc(12px + var(--safe-top))",
+        top: "calc(58px + var(--safe-top))",
         left: 12,
         zIndex: 600,
         fontFamily: GR,

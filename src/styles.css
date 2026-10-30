@@ -77,6 +77,37 @@ body {
   margin: 0 auto 12px;
 }
 
+/* Kiosk touchscreen: everything except the map is drawn bigger, so text is
+   easy to read and buttons easy to hit from arm's length. --kz is the scale.
+   (zoom is used instead of font sizes because the screens are all built from
+   small pixel sizes; the map is left alone so Leaflet stays accurate.) */
+.kiosk-big {
+  --kz: 1.4;
+}
+@media (min-width: 1500px) {
+  .kiosk-big {
+    --kz: 1.7;
+  }
+}
+.kiosk-big > *:not(.kiosk-map-zone) {
+  zoom: var(--kz);
+}
+.kiosk-big > .bottom-sheet {
+  max-height: calc(72vh / var(--kz));
+}
+.kiosk-big > .bottom-sheet.sheet-collapsed {
+  max-height: 44px;
+}
+.kiosk-big .leaflet-control-zoom a {
+  width: 44px;
+  height: 44px;
+  line-height: 44px;
+  font-size: 24px;
+}
+.kiosk-big button {
+  touch-action: manipulation;
+}
+
 .gv-marker-pulse {
   position: absolute;
   border-radius: 50%;
