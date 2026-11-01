@@ -65,6 +65,12 @@ export const importDrivers = (rows) =>
     method: "POST",
     body: JSON.stringify({ rows }),
   });
+// Admin: new random password for a driver who forgot theirs. Returned once.
+// -> { id, name, username, password }
+export const resetDriverPassword = (id) =>
+  req(`drivers?id=${encodeURIComponent(id)}&action=reset-password`, {
+    method: "POST",
+  });
 export const updateDriver = (id, patch) =>
   req(`drivers?id=${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -320,3 +326,28 @@ export const staffRemoveFromLine = (token, driverId) =>
     method: "POST",
     body: JSON.stringify({ driverId }),
   });
+
+// -- Admin data export / backup --------------------------------------------
+// -> [{ name, count }]
+export const getExportables = () => req("admin?action=collections");
+// One collection as a file's text. format "csv" | "json"; from/to = YYYY-MM-DD.
+export async function exportCollection(
+  collection,
+  { format = "json", from, to } = {},
+) {
+  const qs = new URLSearchParams({ action: "export", collection, format });
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  const res = await fetch(`/api/admin?${qs}`);
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      msg = (await res.json()).error || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+  return {
+    text: await res.text(),
+    truncated: res.headers.get("X-Truncated") === "1",
+  };
+}

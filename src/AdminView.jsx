@@ -23,6 +23,9 @@ import {
 import {
   getDrivers,
   updateDriver,
+  resetDriverPassword,
+  getExportables,
+  exportCollection,
   createDriver,
   importDrivers,
   getTricycles,
@@ -882,6 +885,95 @@ function ImportDriversModal({ onClose, onDone }) {
   );
 }
 
+// Forgot-password helper: the admin makes a new random password for a driver
+// and hands it over. Shown once; the old password stops working at once.
+function ResetPasswordButton({ driver }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [err, setErr] = useState("");
+  const run = async () => {
+    if (
+      !window.confirm(
+        `Make a new password for ${driver.name}? The old one will stop working.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setErr("");
+    try {
+      setResult(await resetDriverPassword(driver._id));
+    } catch (e) {
+      setErr(String(e.message || e).replace(/^API [^:]*failed: /, ""));
+    }
+    setBusy(false);
+  };
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button
+        onClick={run}
+        disabled={busy}
+        style={{
+          background: "none",
+          border: `1px solid ${C.border}`,
+          borderRadius: 8,
+          padding: "4px 9px",
+          fontFamily: GR,
+          fontSize: 11,
+          fontWeight: 600,
+          color: C.muted,
+          cursor: "pointer",
+        }}
+      >
+        {busy ? "..." : "Reset password"}
+      </button>
+      {err && (
+        <div
+          style={{
+            color: "#B91C1C",
+            fontSize: 11,
+            fontFamily: IN,
+            marginTop: 4,
+          }}
+        >
+          {err}
+        </div>
+      )}
+      {result && (
+        <div
+          style={{
+            marginTop: 6,
+            background: "#FEF3C7",
+            borderRadius: 8,
+            padding: "6px 9px",
+            fontFamily: IN,
+            fontSize: 11.5,
+            color: "#78350F",
+          }}
+        >
+          Username <b>{result.username}</b>
+          <br />
+          New password:{" "}
+          <b style={{ fontFamily: "monospace" }}>{result.password}</b>
+          <br />
+          Shown once. Give it to the driver now.
+          <button
+            onClick={() => setResult(null)}
+            style={{
+              marginLeft: 8,
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+          >
+            Hide
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DriversTab({ drivers, loading, onRefresh }) {
   const [modal, setModal] = useState(null); // "add" | "import" | null
   return (
@@ -1101,6 +1193,7 @@ function DriversTab({ drivers, loading, onRefresh }) {
                 </td>
                 <td data-label="NFC Card" style={{ padding: "12px 16px" }}>
                   <NfcCell driver={d} onSaved={onRefresh} />
+                  <ResetPasswordButton driver={d} />
                 </td>
                 <td data-label="Duty" style={{ padding: "12px 16px" }}>
                   <DutyBadge driver={d} />
@@ -1931,6 +2024,245 @@ function TariffTab() {
         drop-off points on the map. The apps currently offer the regular
         per-person fare and the discount. Special trips are not offered yet.
       </p>
+    </div>
+  );
+}
+
+// Save text as a file in the browser.
+function saveTextFile(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Download the data (Excel/CSV or JSON) and make a full backup.
+function DataTab() {
+  const [list, setList] = useState(null);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useNotice("");
+  const [note, setNote] = useNotice("");
+
+  useEffect(() => {
+    getExportables()
+      .then(setList)
+      .catch((e) => setErr(e.message || "Could not load"));
+  }, [setErr]);
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  const one = async (name, format) => {
+    setBusy(name + format);
+    try {
+      const r = await exportCollection(name, { format, from, to });
+      saveTextFile(
+        `gravitry-${name}-${stamp}.${format}`,
+        r.text,
+        format === "csv" ? "text/csv;charset=utf-8" : "application/json",
+      );
+      if (r.truncated)
+        setNote(
+          "Too many records: only the first 20,000 were saved. Pick a shorter date range and download again.",
+        );
+    } catch (e) {
+      setErr(e.message || "Download failed");
+    }
+    setBusy("");
+  };
+
+  const backup = async () => {
+    setBusy("backup");
+    try {
+      const out = {
+        app: "gravitry",
+        backedUpAt: new Date().toISOString(),
+        data: {},
+      };
+      let cut = [];
+      for (const c of list) {
+        const r = await exportCollection(c.name, { format: "json" });
+        const j = JSON.parse(r.text);
+        out.data[c.name] = j.rows;
+        if (r.truncated) cut.push(c.name);
+      }
+      saveTextFile(
+        `gravitry-backup-${stamp}.json`,
+        JSON.stringify(out),
+        "application/json",
+      );
+      setNote(
+        cut.length
+          ? `Backup saved, but these were cut at 20,000 records: ${cut.join(", ")}. Download them one by one with a date range.`
+          : "Backup saved.",
+      );
+    } catch (e) {
+      setErr(e.message || "Backup failed");
+    }
+    setBusy("");
+  };
+
+  const box = {
+    background: C.white,
+    borderRadius: 12,
+    border: `1px solid ${C.border}`,
+    padding: "14px 16px",
+    marginBottom: 12,
+  };
+  const btn = {
+    padding: "7px 12px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.white,
+    fontFamily: GR,
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+  };
+  const input = {
+    padding: "7px 9px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    fontFamily: GR,
+    fontSize: 13,
+  };
+  return (
+    <div>
+      <div style={box}>
+        <div
+          style={{
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 14,
+            color: C.text,
+          }}
+        >
+          Full backup
+        </div>
+        <p
+          style={{
+            fontFamily: IN,
+            fontSize: 12,
+            color: C.muted,
+            margin: "6px 0 10px",
+          }}
+        >
+          One file with all the records (rides, drivers, passengers, attendance,
+          incident reports and settings). Passwords, PINs and ID photos are
+          never included. Keep the file somewhere safe.
+        </p>
+        <button
+          onClick={backup}
+          disabled={!list || !!busy}
+          style={{
+            ...btn,
+            background: C.navy,
+            color: "#fff",
+            border: "none",
+            padding: "10px 18px",
+          }}
+        >
+          {busy === "backup" ? "Preparing..." : "Download full backup"}
+        </button>
+      </div>
+
+      <div style={box}>
+        <div
+          style={{
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 14,
+            color: C.text,
+          }}
+        >
+          Download one list (for Excel)
+        </div>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+            margin: "8px 0 12px",
+            fontFamily: IN,
+            fontSize: 12,
+            color: C.muted,
+          }}
+        >
+          From{" "}
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            style={input}
+          />
+          to{" "}
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            style={input}
+          />
+          <span>
+            (optional; applies to rides, passengers, attendance and incidents)
+          </span>
+        </div>
+        {(list || []).map((c) => (
+          <div
+            key={c.name}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 0",
+              borderTop: `1px solid ${C.border}`,
+              flexWrap: "wrap",
+            }}
+          >
+            <span
+              style={{
+                fontFamily: GR,
+                fontWeight: 600,
+                fontSize: 13,
+                flex: "1 1 160px",
+              }}
+            >
+              {c.name.replace("_", " ")}{" "}
+              <span style={{ color: C.muted, fontWeight: 400 }}>
+                ({c.count})
+              </span>
+            </span>
+            <button
+              style={btn}
+              disabled={!!busy}
+              onClick={() => one(c.name, "csv")}
+            >
+              {busy === c.name + "csv" ? "..." : "Excel (CSV)"}
+            </button>
+            <button
+              style={btn}
+              disabled={!!busy}
+              onClick={() => one(c.name, "json")}
+            >
+              {busy === c.name + "json" ? "..." : "JSON"}
+            </button>
+          </div>
+        ))}
+      </div>
+      {err && (
+        <div style={{ color: "#B91C1C", fontFamily: GR, fontSize: 13 }}>
+          {err}
+        </div>
+      )}
+      {note && (
+        <div style={{ color: C.greenDark, fontFamily: GR, fontSize: 13 }}>
+          {note}
+        </div>
+      )}
     </div>
   );
 }
@@ -4588,6 +4920,7 @@ export default function AdminView() {
             ["override", "Override"],
             ["incidents", "Incidents"],
             ["log", "Log"],
+            ["data", "Data"],
           ].map(([key, label]) => (
             <button
               key={key}
@@ -4667,6 +5000,7 @@ export default function AdminView() {
           />
         )}
         {tab === "fares" && <TariffTab />}
+        {tab === "data" && <DataTab />}
         {tab === "users" && <UsersTab />}
         {tab === "verify" && (
           <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
