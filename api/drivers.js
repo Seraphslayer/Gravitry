@@ -245,6 +245,37 @@ export default async function handler(req, res) {
       });
     }
 
+    // POST /api/drivers?id=D1&action=reset-password   (admin only)
+    // For a driver who forgot their password. Makes a new random one, returned
+    // ONCE for the admin to hand over, and clears any login lockout so the
+    // driver can sign in right away.
+    if (req.method === "POST" && action === "reset-password") {
+      const session = requireSession(req, res, ["admin"]);
+      if (!session) return;
+      if (!id) return res.status(400).json({ error: "Choose a driver" });
+      const driver = await col.findOne({ _id: id });
+      if (!driver) return res.status(404).json({ error: "Driver not found" });
+      if (!driver.username)
+        return res.status(409).json({ error: "This driver has no login yet" });
+      const password = generatePassword();
+      await col.updateOne(
+        { _id: id },
+        {
+          $set: {
+            passwordHash: hashPassword(password),
+            passwordResetAt: new Date().toISOString(),
+            passwordResetBy: session.sub,
+          },
+        },
+      );
+      await db
+        .collection("login_attempts")
+        .deleteOne({ _id: `login:${driver.username.toLowerCase()}` });
+      return res
+        .status(200)
+        .json({ id, name: driver.name, username: driver.username, password });
+    }
+
     // GET /api/drivers?action=locations   (admin only)
     // Every driver's last shared position for the admin map. Never part of the
     // public driver list.

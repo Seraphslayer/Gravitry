@@ -147,7 +147,13 @@ export async function call(
     json(j) {
       out = { status: this.c ?? 200, body: j };
     },
-    setHeader() {},
+    send(b) {
+      out = { status: this.c ?? 200, body: b, headers: this.h };
+    },
+    h: {},
+    setHeader(k, v) {
+      this.h[k] = v;
+    },
   };
   await handler({ method, query, body, headers: { cookie, ...headers } }, res);
   return out;
