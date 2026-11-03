@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import "./styles.css";
 import KioskView from "./KioskView.jsx";
+import ShareTrip from "./ShareTrip.jsx";
 import DriverView from "./DriverView.jsx";
 import AdminView from "./AdminView.jsx";
 import LoginModal from "./LoginModal.jsx";
@@ -93,6 +94,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<PassengerApp />} />
           <Route path="/kiosk" element={<KioskView />} />
+          <Route path="/trip/:token" element={<ShareTrip />} />
           <Route
             path="/driver"
             element={

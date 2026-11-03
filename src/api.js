@@ -1,11 +1,27 @@
 // Thin fetch wrapper around the /api serverless backend.
 // All calls are same-origin (frontend + API deploy together on Vercel).
 
+// Failed calls (no network, or a server error) since the last kiosk ping, so
+// the admin Status tab can show whether the kiosk is struggling.
+let failedCalls = 0;
+export const takeApiErrors = () => {
+  const n = failedCalls;
+  failedCalls = 0;
+  return n;
+};
+
 async function req(path, options = {}) {
-  const res = await fetch(`/api/${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  let res;
+  try {
+    res = await fetch(`/api/${path}`, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (e) {
+    failedCalls += 1;
+    throw e;
+  }
+  if (res.status >= 500) failedCalls += 1;
   if (!res.ok) {
     let msg = res.statusText;
     try {
@@ -351,3 +367,45 @@ export async function exportCollection(
     truncated: res.headers.get("X-Truncated") === "1",
   };
 }
+
+// -- Reports and system status (admin) ---------------------------------------
+// from / to = YYYY-MM-DD (Philippine days); both optional (default last 30 days)
+export const getAnalytics = ({ from, to } = {}) => {
+  const qs = new URLSearchParams({ action: "analytics" });
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  return req(`admin?${qs}`);
+};
+export const getSystemStatus = () => req("admin?action=status");
+// Kiosk: "I am alive" (see api/queue.js)
+export const kioskPing = (apiErrors = 0) =>
+  req("queue?action=kiosk-ping", {
+    method: "POST",
+    body: JSON.stringify({ apiErrors }),
+  });
+
+// -- Share my trip ---------------------------------------------------------
+// Passenger: make (or get) the private link token for an active ride.
+export const shareTrip = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=share`, { method: "POST" });
+export const unshareTrip = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=unshare`, {
+    method: "POST",
+  });
+// Public (family): the trip behind a share link.
+export const getSharedTrip = (token) =>
+  req(`requests?share=${encodeURIComponent(token)}`);
+
+// -- Push notifications ------------------------------------------------------
+// -> { enabled, publicKey }
+export const getPushKey = () => req("auth?action=push-key");
+export const savePushSubscription = (subscription) =>
+  req("auth?action=push-subscribe", {
+    method: "POST",
+    body: JSON.stringify({ subscription }),
+  });
+export const removePushSubscription = (endpoint) =>
+  req("auth?action=push-unsubscribe", {
+    method: "POST",
+    body: JSON.stringify({ endpoint }),
+  });

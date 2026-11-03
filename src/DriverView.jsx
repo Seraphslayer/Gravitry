@@ -53,6 +53,7 @@ import {
   sendPresence,
   markPickedUp,
 } from "./api.js";
+import PushToggle from "./PushToggle.jsx";
 import { useAuth } from "./AuthContext.jsx";
 import IncidentButton from "./IncidentReport.jsx";
 import LineCard from "./LineCard.jsx";
@@ -760,6 +761,7 @@ export default function DriverView() {
               {online ? "Online" : "Offline"}
             </span>
           </button>
+          <PushToggle />
           <button
             onClick={handleLogout}
             title="Log out"

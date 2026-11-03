@@ -44,6 +44,16 @@ Run `npm run check`, `npm test` and `npm run build` before saying a change works
 - The temp-access value `TEMP_ACCESS_SECONDS` in `api/_settings.js` is a short
   TEST value; check it before real deployment.
 
+## Push notifications (free Web Push)
+`api/_push.js` (shared code) sends them; subscriptions are saved through
+`api/auth.js` actions `push-key` / `push-subscribe` / `push-unsubscribe`
+(function limit: no new file). The browser side is `public/sw.js`, `src/push.js`
+and the bell in `src/PushToggle.jsx`. Needs `VAPID_PUBLIC_KEY`,
+`VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` env vars (make them with `npm run vapid`);
+without them push is just off. Sending never throws and never blocks a ride.
+Tests set `PUSH_TEST=1`, which logs messages to `global._gravitryPushLog`
+instead of sending. iPhones only get push for apps added to the Home Screen.
+
 ## Tests
 `tests/helpers.mjs` has the fake database and `call()` helper. Import it first
 in a test file. Add a test for every new endpoint or rule. Each file runs in

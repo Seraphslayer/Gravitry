@@ -1,6 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { getDb } from "./_db.js";
 import { getSessionFromReq, getStaffFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
+import { withinRate } from "./_images.js";
+import { notify, notifyAccepted, msg } from "./_push.js";
 import { tempAccessDeadline } from "./_settings.js";
 import {
   verifyQuote,
@@ -118,6 +121,7 @@ function canSeePassengerDetails(req) {
 // sequential (DR-001, DR-002...), so the public lookup must not leak these.
 function publicView(doc) {
   const {
+    shareToken: _t,
     passengerId: _a,
     passengerName: _b,
     passengerStatus: _c,
@@ -130,11 +134,115 @@ function publicView(doc) {
   return rest;
 }
 
+// Drivers and kiosk staff see passenger details, but never the private
+// "share my trip" link of a ride.
+const withoutToken = ({ shareToken: _t, ...rest }) => rest;
+
+const SHARE_AFTER_END_MS = 2 * 60 * 60 * 1000; // a shared link works for 2 h after the ride ends
+
 export default async function handler(req, res) {
   try {
     const db = await getDb();
     const col = db.collection("requests");
-    const { id, action, status, origin, passengerId } = req.query;
+    const { id, action, status, origin, passengerId, share } = req.query;
+
+    // GET /api/requests?share=TOKEN   (public, no login)
+    // What a passenger's family sees through the "Share my trip" link: who is
+    // driving, which tricycle, where it is now, and where it is going. Never
+    // the passenger's account details. Works while the ride is active and for
+    // 2 hours after it ends.
+    if (req.method === "GET" && share) {
+      if (!(await withinRate(db, "share-view", 300, 60 * 1000)))
+        return res
+          .status(429)
+          .json({ error: "Too many requests. Try again shortly." });
+      if (typeof share !== "string" || share.length < 16)
+        return res.status(404).json({ error: "This link is not valid" });
+      const doc = await col.findOne({ shareToken: share });
+      if (!doc)
+        return res.status(404).json({ error: "This link is not valid" });
+      const endedAt = doc.completedAt || doc.cancelledAt;
+      if (
+        ["completed", "cancelled"].includes(doc.status) &&
+        endedAt &&
+        Date.now() - new Date(endedAt).getTime() > SHARE_AFTER_END_MS
+      )
+        return res
+          .status(410)
+          .json({ error: "This trip has ended and the link has expired" });
+
+      let driverLocation = null;
+      if (doc.status === "dispatched" && doc.driverId) {
+        const d = await db
+          .collection("drivers")
+          .findOne({ _id: doc.driverId }, { projection: { appLocation: 1 } });
+        const loc = d?.appLocation;
+        if (loc && Date.now() - new Date(loc.at).getTime() < 60 * 1000)
+          driverLocation = { lat: loc.lat, lng: loc.lng, at: loc.at };
+      }
+      const first = (doc.passengerName || "").trim().split(/\s+/)[0] || null;
+      return res.status(200).json({
+        status: doc.status,
+        passengerFirstName: first,
+        driver: doc.driver || null,
+        unit: doc.unit || null,
+        plate: doc.plate || null,
+        pickup: doc.pickup
+          ? {
+              lat: doc.pickup.lat,
+              lng: doc.pickup.lng,
+              label: doc.pickup.label ?? null,
+            }
+          : null,
+        dropoff: doc.dropoff
+          ? {
+              lat: doc.dropoff.lat,
+              lng: doc.dropoff.lng,
+              label: doc.dropoff.label ?? null,
+            }
+          : null,
+        requestedAt: doc.ts,
+        acceptedAt: doc.acceptedAt || null,
+        pickedUpAt: doc.pickedUpAt || null,
+        completedAt: doc.completedAt || null,
+        driverLocation,
+      });
+    }
+
+    // POST /api/requests?id=DR-001&action=share | unshare   (the passenger)
+    // share makes (or returns) the private link token; unshare turns the link off.
+    if (
+      req.method === "POST" &&
+      id &&
+      (action === "share" || action === "unshare")
+    ) {
+      const session = requireSession(req, res, ["passenger"]);
+      if (!session) return;
+      const doc = await col.findOne({ _id: id });
+      if (!doc || doc.passengerId !== session.passengerId)
+        return res.status(404).json({ error: "Ride not found" });
+      if (action === "unshare") {
+        await col.updateOne(
+          { _id: id },
+          { $unset: { shareToken: "", sharedAt: "" } },
+        );
+        return res.status(200).json({ shared: false });
+      }
+      if (!["pending", "dispatched"].includes(doc.status))
+        return res
+          .status(409)
+          .json({ error: "You can share a ride while it is active" });
+      if (doc.shareToken)
+        return res.status(200).json({ token: doc.shareToken });
+      const token = randomBytes(18).toString("base64url");
+      await col.updateOne(
+        { _id: id, shareToken: { $exists: false } },
+        { $set: { shareToken: token, sharedAt: new Date().toISOString() } },
+      );
+      // two quick taps: whichever wrote first wins, both get the same link
+      const fresh = await col.findOne({ _id: id });
+      return res.status(200).json({ token: fresh.shareToken });
+    }
 
     // POST /api/requests  - kiosk or passenger app creates a pending ride request
     if (req.method === "POST" && !id && !action) {
@@ -304,6 +412,16 @@ export default async function handler(req, res) {
         ...identity,
       };
       await col.insertOne(doc);
+      // Drivers waiting in this terminal's line hear about it right away.
+      const inLine = await db
+        .collection("terminal_line")
+        .find({ terminal: o })
+        .toArray();
+      await notify(
+        db,
+        { role: "driver", ids: inLine.map((l) => l._id) },
+        msg.newRide(doc, source === "kiosk"),
+      );
       return res.status(201).json(doc);
     }
 
@@ -468,7 +586,8 @@ export default async function handler(req, res) {
             { driverId: driver._id },
             { $set: { status: "on_trip", terminal: null } },
           );
-        return res.status(200).json(doc);
+        await notifyAccepted(db, doc);
+        return res.status(200).json(withoutToken(doc));
       }
 
       // Trip is already on record: the driver stays available and their
@@ -483,7 +602,7 @@ export default async function handler(req, res) {
           { $set: { status: "available", terminal: doc.destination } },
         );
 
-      return res.status(200).json(doc);
+      return res.status(200).json(withoutToken(doc));
     }
 
     // GET /api/requests?status=pending&origin=T1&passengerId=P-001  - list/filter
@@ -509,8 +628,13 @@ export default async function handler(req, res) {
       const docs = await col.find(filter).sort({ ts: -1 }).toArray();
       // Own history (passengerId) was already checked above; any other list is
       // trimmed unless staff or a driver is asking.
-      const full = passengerId || canSeePassengerDetails(req);
-      return res.status(200).json(full ? docs : docs.map(publicView));
+      const isAdmin = getSessionFromReq(req)?.role === "admin";
+      const out = passengerId
+        ? docs
+        : canSeePassengerDetails(req)
+          ? docs.map((d) => (isAdmin ? d : withoutToken(d)))
+          : docs.map(publicView);
+      return res.status(200).json(out);
     }
 
     // GET /api/requests?id=DR-001  - single lookup (used by kiosk/passenger
@@ -522,9 +646,16 @@ export default async function handler(req, res) {
       const me = getSessionFromReq(req);
       const owner =
         me?.role === "passenger" && me.passengerId === doc.passengerId;
+      const isAdmin = me?.role === "admin";
       return res
         .status(200)
-        .json(owner || canSeePassengerDetails(req) ? doc : publicView(doc));
+        .json(
+          owner || isAdmin
+            ? doc
+            : canSeePassengerDetails(req)
+              ? withoutToken(doc)
+              : publicView(doc),
+        );
     }
 
     // GET /api/requests?id=DR-001&action=track
@@ -576,7 +707,13 @@ export default async function handler(req, res) {
         return res
           .status(404)
           .json({ error: "Trip not found, or already marked picked up" });
-      return res.status(200).json(doc);
+      if (doc.passengerId)
+        await notify(
+          db,
+          { role: "passenger", id: doc.passengerId },
+          msg.arrived(doc),
+        );
+      return res.status(200).json(withoutToken(doc));
     }
 
     // POST /api/requests?id=DR-001&action=accept
@@ -688,7 +825,8 @@ export default async function handler(req, res) {
           { $set: { status: "on_trip", terminal: null } },
         );
 
-      return res.status(200).json(doc);
+      await notifyAccepted(db, doc);
+      return res.status(200).json(withoutToken(doc));
     }
 
     // POST /api/requests?id=DR-001&action=cancel
@@ -720,7 +858,7 @@ export default async function handler(req, res) {
       const doc = result?.value ?? result;
       if (!doc)
         return res.status(409).json({ error: "Request was just accepted" });
-      return res.status(200).json(doc);
+      return res.status(200).json(withoutToken(doc));
     }
 
     // POST /api/requests?id=DR-001&action=rate  { stars: 1-5, comment? }
@@ -783,7 +921,7 @@ export default async function handler(req, res) {
           },
         );
       }
-      return res.status(200).json(doc);
+      return res.status(200).json(withoutToken(doc));
     }
 
     // POST /api/requests?id=DR-001&action=complete
@@ -827,7 +965,13 @@ export default async function handler(req, res) {
             { $set: { status: "available", terminal: doc.destination } },
           );
       }
-      return res.status(200).json(doc);
+      if (doc.passengerId)
+        await notify(
+          db,
+          { role: "passenger", id: doc.passengerId },
+          msg.finished(doc),
+        );
+      return res.status(200).json(withoutToken(doc));
     }
 
     return res.status(405).json({ error: "Method not allowed" });
