@@ -78,6 +78,7 @@ import {
 import { useAuth } from "./AuthContext.jsx";
 import SignupFlow from "./SignupFlow.jsx";
 import IncidentButton from "./IncidentReport.jsx";
+import { ShareTripButton } from "./ShareTrip.jsx";
 
 const terminalIcon = pinIcon(C.navy, false);
 const pickupIcon = pinIcon(C.green, true);
@@ -2434,6 +2435,7 @@ export default function PassengerApp() {
                     >
                       We'll notify you the moment a TODA driver accepts
                     </p>
+                    <ShareTripButton rideId={myRequestId} />
                     <button
                       onClick={cancelWaiting}
                       style={{
@@ -2582,6 +2584,7 @@ export default function PassengerApp() {
                         </span>
                       </div>
                     </div>
+                    <ShareTripButton rideId={myRequestId} />
                   </div>
                 )}
 

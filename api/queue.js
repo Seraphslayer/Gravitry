@@ -1,5 +1,6 @@
 import { getDb } from "./_db.js";
 import { requireSession } from "./_authz.js";
+import { withinRate } from "./_images.js";
 import {
   expiredDocsOf,
   joinLine,
@@ -20,6 +21,7 @@ import {
 //   GET  /api/queue?action=mine        driver   my place in line, or null
 //   POST /api/queue?action=join        driver   { lat, lng }  must be near a terminal
 //   POST /api/queue?action=leave       driver   leave the line
+//   POST /api/queue?action=kiosk-ping  kiosk    "I am alive" ({ apiErrors? }), shown on the admin Status tab
 export default async function handler(req, res) {
   try {
     const db = await getDb();
@@ -87,6 +89,27 @@ export default async function handler(req, res) {
         position: line.findIndex((d) => d.driverId === driver._id) + 1,
         lineLength: line.length,
       });
+    }
+
+    // The kiosk has no login, so this only records that it is alive and how many
+    // of its calls failed lately. It controls nothing; cheap and rate-limited.
+    if (req.method === "POST" && action === "kiosk-ping") {
+      if (!(await withinRate(db, "kiosk-ping", 20, 60 * 1000)))
+        return res.status(429).json({ error: "Too many pings" });
+      const errors = Number(req.body?.apiErrors);
+      await db.collection("settings").updateOne(
+        { _id: "kiosk-heartbeat" },
+        {
+          $set: {
+            at: new Date().toISOString(),
+            apiErrors: Number.isFinite(errors)
+              ? Math.min(Math.max(0, Math.round(errors)), 9999)
+              : 0,
+          },
+        },
+        { upsert: true },
+      );
+      return res.status(200).json({ ok: true });
     }
 
     if (req.method === "POST" && action === "leave") {
