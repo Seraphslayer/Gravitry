@@ -395,3 +395,17 @@ export const unshareTrip = (id) =>
 // Public (family): the trip behind a share link.
 export const getSharedTrip = (token) =>
   req(`requests?share=${encodeURIComponent(token)}`);
+
+// -- Push notifications ------------------------------------------------------
+// -> { enabled, publicKey }
+export const getPushKey = () => req("auth?action=push-key");
+export const savePushSubscription = (subscription) =>
+  req("auth?action=push-subscribe", {
+    method: "POST",
+    body: JSON.stringify({ subscription }),
+  });
+export const removePushSubscription = (endpoint) =>
+  req("auth?action=push-unsubscribe", {
+    method: "POST",
+    body: JSON.stringify({ endpoint }),
+  });

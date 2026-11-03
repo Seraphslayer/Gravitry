@@ -1,3 +1,4 @@
+import { notifyAccepted } from "./_push.js";
 // Shared dispatch rules, used by requests.js (NFC tap, admin override) and
 // staff.js (kiosk staff panel). Files starting with "_" are not API routes.
 
@@ -155,6 +156,7 @@ export async function assignRide(db, { id, driverId, reason, by }) {
         { $set: { status: "available", terminal: doc.destination } },
       );
   }
+  await notifyAccepted(db, doc);
   const { shareToken: _t, ...safe } = doc;
   return { code: 200, body: safe };
 }

@@ -1,6 +1,7 @@
 import { getDb } from "./_db.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
 import { withinRate } from "./_images.js";
+import { notify, msg } from "./_push.js";
 
 // SOS alerts and incident reports.
 //
@@ -176,6 +177,8 @@ export default async function handler(req, res) {
         ts: new Date().toISOString(),
       };
       await col.insertOne(doc);
+      // TODA staff get it on their phones even if the admin page is closed.
+      await notify(db, { role: "admin" }, msg.sos(doc));
       return res.status(201).json({ id: doc._id, kind, ts: doc.ts });
     }
 
@@ -271,6 +274,12 @@ export default async function handler(req, res) {
       if (existing.status === "resolved")
         return res.status(409).json({ error: "Already resolved" });
       await col.updateOne({ _id: id }, { $set: set });
+      if (action === "ack" && existing.reporter?.id)
+        await notify(
+          db,
+          { role: existing.reporter.role, id: existing.reporter.id },
+          msg.reportSeen({ ...existing, ...set }),
+        );
       return res.status(200).json({ ...existing, ...set });
     }
 
