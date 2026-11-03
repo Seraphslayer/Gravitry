@@ -383,3 +383,15 @@ export const kioskPing = (apiErrors = 0) =>
     method: "POST",
     body: JSON.stringify({ apiErrors }),
   });
+
+// -- Share my trip ---------------------------------------------------------
+// Passenger: make (or get) the private link token for an active ride.
+export const shareTrip = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=share`, { method: "POST" });
+export const unshareTrip = (id) =>
+  req(`requests?id=${encodeURIComponent(id)}&action=unshare`, {
+    method: "POST",
+  });
+// Public (family): the trip behind a share link.
+export const getSharedTrip = (token) =>
+  req(`requests?share=${encodeURIComponent(token)}`);
