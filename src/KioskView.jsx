@@ -62,6 +62,8 @@ import {
   cancelRequest,
   getRequestById,
   getRequests,
+  kioskPing,
+  takeApiErrors,
   acceptViaNfc,
 } from "./api.js";
 
@@ -396,6 +398,14 @@ export default function KioskView() {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, myRequestId]);
+
+  // Tell the server the kiosk is alive (shown on the admin Status tab).
+  useEffect(() => {
+    const ping = () => kioskPing(takeApiErrors()).catch(() => {});
+    ping();
+    const id = setInterval(ping, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   // Nominatim search
   useEffect(() => {
