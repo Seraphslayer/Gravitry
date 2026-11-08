@@ -3,6 +3,7 @@ import { getDb } from "./_db.js";
 import { getSessionFromReq, getStaffFromReq } from "./_auth.js";
 import { requireSession, isNonEmptyString } from "./_authz.js";
 import { withinRate } from "./_images.js";
+import { notify, notifyAccepted, msg } from "./_push.js";
 import { tempAccessDeadline } from "./_settings.js";
 import {
   verifyQuote,
@@ -411,6 +412,16 @@ export default async function handler(req, res) {
         ...identity,
       };
       await col.insertOne(doc);
+      // Drivers waiting in this terminal's line hear about it right away.
+      const inLine = await db
+        .collection("terminal_line")
+        .find({ terminal: o })
+        .toArray();
+      await notify(
+        db,
+        { role: "driver", ids: inLine.map((l) => l._id) },
+        msg.newRide(doc, source === "kiosk"),
+      );
       return res.status(201).json(doc);
     }
 
@@ -575,6 +586,7 @@ export default async function handler(req, res) {
             { driverId: driver._id },
             { $set: { status: "on_trip", terminal: null } },
           );
+        await notifyAccepted(db, doc);
         return res.status(200).json(withoutToken(doc));
       }
 
@@ -695,6 +707,12 @@ export default async function handler(req, res) {
         return res
           .status(404)
           .json({ error: "Trip not found, or already marked picked up" });
+      if (doc.passengerId)
+        await notify(
+          db,
+          { role: "passenger", id: doc.passengerId },
+          msg.arrived(doc),
+        );
       return res.status(200).json(withoutToken(doc));
     }
 
@@ -807,6 +825,7 @@ export default async function handler(req, res) {
           { $set: { status: "on_trip", terminal: null } },
         );
 
+      await notifyAccepted(db, doc);
       return res.status(200).json(withoutToken(doc));
     }
 
@@ -946,6 +965,12 @@ export default async function handler(req, res) {
             { $set: { status: "available", terminal: doc.destination } },
           );
       }
+      if (doc.passengerId)
+        await notify(
+          db,
+          { role: "passenger", id: doc.passengerId },
+          msg.finished(doc),
+        );
       return res.status(200).json(withoutToken(doc));
     }
 

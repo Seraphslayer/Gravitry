@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Truck, Star, Wifi, X } from "lucide-react";
 import L from "leaflet";
+import PushToggle from "./PushToggle.jsx";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import {
   C,
@@ -5422,6 +5423,7 @@ export default function AdminView() {
             Mary Cris Complex TODA
           </div>
         </div>
+        <PushToggle style={{ marginLeft: "auto" }} />
       </div>
 
       <div

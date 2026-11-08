@@ -3,6 +3,7 @@
 // Import this FIRST in a test file (it sets the env vars the API code reads).
 process.env.JWT_SECRET = "t".repeat(40);
 process.env.MONGODB_URI = "mongodb://test";
+process.env.PUSH_TEST = "1"; // push messages are collected, never sent
 
 import { pathToFileURL } from "node:url";
 

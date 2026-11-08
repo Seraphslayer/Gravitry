@@ -9,6 +9,12 @@ import {
 } from "./_auth.js";
 import { isNonEmptyString, requireSession } from "./_authz.js";
 import { isValidPhoto, withinRate } from "./_images.js";
+import {
+  pushEnabled,
+  vapidPublicKey,
+  validSubscription,
+  subscriptionId,
+} from "./_push.js";
 
 async function nextId(db, name, prefix) {
   const result = await db
@@ -454,6 +460,69 @@ export default async function handler(req, res) {
 
       await recordLoginFailure(db, key);
       return res.status(401).json({ error: "Invalid username or password" });
+    }
+
+    // ---- Push notifications (see api/_push.js) --------------------------------
+    // GET  ?action=push-key          the public key the browser needs (and whether push is on)
+    // POST ?action=push-subscribe    { subscription }  this phone/browser wants notifications
+    // POST ?action=push-unsubscribe  { endpoint }      stop them
+    if (req.method === "GET" && action === "push-key") {
+      return res
+        .status(200)
+        .json({ enabled: pushEnabled(), publicKey: vapidPublicKey() });
+    }
+    if (req.method === "POST" && action === "push-subscribe") {
+      const session = requireSession(req, res, [
+        "passenger",
+        "driver",
+        "admin",
+      ]);
+      if (!session) return;
+      if (!pushEnabled())
+        return res
+          .status(503)
+          .json({ error: "Notifications are not set up yet" });
+      const sub = req.body?.subscription;
+      if (!validSubscription(sub))
+        return res.status(400).json({ error: "Invalid subscription" });
+      const userId =
+        session.role === "driver"
+          ? session.driverId
+          : session.role === "passenger"
+            ? session.passengerId
+            : session.sub;
+      const col = db.collection("push_subscriptions");
+      await col.updateOne(
+        { _id: subscriptionId(sub.endpoint) },
+        {
+          $set: {
+            role: session.role,
+            userId,
+            subscription: { endpoint: sub.endpoint, keys: sub.keys },
+            createdAt: new Date().toISOString(),
+          },
+        },
+        { upsert: true },
+      );
+      // keep at most 5 devices per person (drop the oldest)
+      const mine = await col.find({ role: session.role, userId }).toArray();
+      mine.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      for (const old of mine.slice(5)) await col.deleteOne({ _id: old._id });
+      return res.status(200).json({ ok: true });
+    }
+    if (req.method === "POST" && action === "push-unsubscribe") {
+      const session = requireSession(req, res, [
+        "passenger",
+        "driver",
+        "admin",
+      ]);
+      if (!session) return;
+      const endpoint = req.body?.endpoint;
+      if (typeof endpoint === "string")
+        await db
+          .collection("push_subscriptions")
+          .deleteOne({ _id: subscriptionId(endpoint) });
+      return res.status(200).json({ ok: true });
     }
 
     if (req.method === "POST" && action === "logout") {

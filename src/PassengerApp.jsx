@@ -78,6 +78,7 @@ import {
 import { useAuth } from "./AuthContext.jsx";
 import SignupFlow from "./SignupFlow.jsx";
 import IncidentButton from "./IncidentReport.jsx";
+import PushToggle from "./PushToggle.jsx";
 import { ShareTripButton } from "./ShareTrip.jsx";
 
 const terminalIcon = pinIcon(C.navy, false);
@@ -1598,8 +1599,12 @@ export default function PassengerApp() {
           top: "calc(12px + var(--safe-top))",
           right: 60,
           zIndex: 600,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
         }}
       >
+        {isPassenger && <PushToggle />}
         {isPassenger ? (
           <button
             onClick={handleLogout}
