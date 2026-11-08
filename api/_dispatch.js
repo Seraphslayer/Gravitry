@@ -155,7 +155,8 @@ export async function assignRide(db, { id, driverId, reason, by }) {
         { $set: { status: "available", terminal: doc.destination } },
       );
   }
-  return { code: 200, body: doc };
+  const { shareToken: _t, ...safe } = doc;
+  return { code: 200, body: safe };
 }
 
 // Cancels a waiting ride. -> { code, body }
