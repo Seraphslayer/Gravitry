@@ -25,6 +25,8 @@ import {
   updateDriver,
   resetDriverPassword,
   getExportables,
+  getAnalytics,
+  getSystemStatus,
   exportCollection,
   createDriver,
   importDrivers,
@@ -2024,6 +2026,583 @@ function TariffTab() {
         drop-off points on the map. The apps currently offer the regular
         per-person fare and the discount. Special trips are not offered yet.
       </p>
+    </div>
+  );
+}
+
+// ── Reports: how the service is doing, for a chosen period ───────────────────
+const peso = (n) =>
+  n == null
+    ? "-"
+    : `\u20B1${Number(n).toLocaleString("en-PH", { maximumFractionDigits: 2 })}`;
+
+// Simple bar chart: items = [{ label, value, title }]
+function Bars({ items, height = 110, color = C.green, every = 1 }) {
+  const max = Math.max(1, ...items.map((i) => i.value));
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: items.length > 40 ? 1 : 3,
+          height,
+        }}
+      >
+        {items.map((i, n) => (
+          <div
+            key={n}
+            title={i.title}
+            style={{
+              flex: 1,
+              minWidth: 1,
+              height: `${Math.max(2, (i.value / max) * 100)}%`,
+              background: i.value ? color : C.border,
+              borderRadius: "3px 3px 0 0",
+            }}
+          />
+        ))}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: items.length > 40 ? 1 : 3,
+          marginTop: 3,
+        }}
+      >
+        {items.map((i, n) => (
+          <div
+            key={n}
+            style={{
+              flex: 1,
+              minWidth: 1,
+              textAlign: "center",
+              fontSize: 9.5,
+              color: C.muted,
+              fontFamily: IN,
+              overflow: "visible",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {n % every === 0 ? i.label : ""}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReportsTab() {
+  const [range, setRange] = useState({ from: "", to: "" });
+  const [data, setData] = useState(null);
+  const [err, setErr] = useNotice("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(
+    async (r) => {
+      setBusy(true);
+      try {
+        setData(await getAnalytics(r));
+      } catch (e) {
+        setErr(String(e.message || e).replace(/^API [^:]*failed: /, ""));
+      }
+      setBusy(false);
+    },
+    [setErr],
+  );
+  useEffect(() => {
+    load({});
+  }, [load]);
+
+  const preset = (days) => {
+    const to = new Date().toLocaleDateString("en-CA", {
+      timeZone: "Asia/Manila",
+    });
+    const from = new Date(
+      Date.now() - (days - 1) * 86400000,
+    ).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+    setRange({ from, to });
+    load({ from, to });
+  };
+
+  const box = {
+    background: C.white,
+    borderRadius: 12,
+    border: `1px solid ${C.border}`,
+    padding: "14px 16px",
+    marginBottom: 12,
+  };
+  const h = {
+    fontFamily: GR,
+    fontWeight: 700,
+    fontSize: 14,
+    color: C.text,
+    marginBottom: 8,
+  };
+  const btn = {
+    padding: "6px 11px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    background: C.white,
+    fontFamily: GR,
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+  };
+  const input = {
+    padding: "6px 8px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    fontFamily: GR,
+    fontSize: 12.5,
+  };
+
+  const t = data?.totals;
+  const cards = data && [
+    [
+      "Completed rides",
+      t.completed,
+      `${t.booked} booked, ${t.cancelled} cancelled`,
+    ],
+    ["Income", peso(t.income), `average ${peso(t.averageFare)} per ride`],
+    [
+      "Median wait",
+      data.waitMinutes.median == null ? "-" : `${data.waitMinutes.median} min`,
+      `${data.waitMinutes.over10} rides waited over 10 min`,
+    ],
+    ["Kiosk / App", `${t.kiosk} / ${t.app}`, `${t.discounted} with a discount`],
+    [
+      "Average rating",
+      t.averageStars == null ? "-" : `${t.averageStars} \u2605`,
+      `${t.rated} rated rides`,
+    ],
+    [
+      "SOS / incidents",
+      `${data.incidents.sos} / ${data.incidents.incidents}`,
+      data.incidents.averageResponseMinutes == null
+        ? "no responses yet"
+        : `staff replied in ${data.incidents.averageResponseMinutes} min on average`,
+    ],
+  ];
+
+  const downloadCsv = () => {
+    const rows = [
+      "date,completed_rides,income",
+      ...data.perDay.map((d) => `${d.date},${d.rides},${d.income}`),
+    ];
+    saveTextFile(
+      `gravitry-report-${data.from}_${data.to}.csv`,
+      "\uFEFF" + rows.join("\r\n"),
+      "text/csv;charset=utf-8",
+    );
+  };
+
+  return (
+    <div>
+      <div
+        style={{
+          ...box,
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        {[
+          [7, "7 days"],
+          [30, "30 days"],
+          [90, "90 days"],
+        ].map(([d, l]) => (
+          <button key={d} style={btn} onClick={() => preset(d)}>
+            Last {l}
+          </button>
+        ))}
+        <span style={{ fontFamily: IN, fontSize: 12, color: C.muted }}>or</span>
+        <input
+          type="date"
+          value={range.from}
+          onChange={(e) => setRange({ ...range, from: e.target.value })}
+          style={input}
+        />
+        <span style={{ fontFamily: IN, fontSize: 12, color: C.muted }}>to</span>
+        <input
+          type="date"
+          value={range.to}
+          onChange={(e) => setRange({ ...range, to: e.target.value })}
+          style={input}
+        />
+        <button
+          style={{ ...btn, background: C.navy, color: "#fff", border: "none" }}
+          onClick={() => load(range)}
+          disabled={busy}
+        >
+          {busy ? "..." : "Show"}
+        </button>
+        {data && (
+          <>
+            <button style={btn} onClick={downloadCsv}>
+              Download (Excel)
+            </button>
+            <button style={btn} onClick={() => window.print()}>
+              Print / save PDF
+            </button>
+          </>
+        )}
+      </div>
+      {err && (
+        <div
+          style={{
+            color: "#B91C1C",
+            fontFamily: GR,
+            fontSize: 13,
+            marginBottom: 8,
+          }}
+        >
+          {err}
+        </div>
+      )}
+      {!data && !err && (
+        <p style={{ fontFamily: IN, color: C.muted }}>Loading...</p>
+      )}
+      {data && (
+        <>
+          <p
+            style={{
+              fontFamily: IN,
+              fontSize: 12,
+              color: C.muted,
+              margin: "0 0 10px",
+            }}
+          >
+            {data.from} to {data.to} (Philippine time)
+            {data.truncated &&
+              " - very many rides: only the first 50,000 were counted."}
+          </p>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: 10,
+              marginBottom: 12,
+            }}
+          >
+            {cards.map(([label, value, sub]) => (
+              <div
+                key={label}
+                style={{
+                  background: C.white,
+                  borderRadius: 12,
+                  border: `1px solid ${C.border}`,
+                  padding: "12px 14px",
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 22,
+                    color: C.navy,
+                  }}
+                >
+                  {value}
+                </div>
+                <div
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 600,
+                    fontSize: 11.5,
+                    color: C.text,
+                  }}
+                >
+                  {label}
+                </div>
+                <div style={{ fontFamily: IN, fontSize: 10.5, color: C.muted }}>
+                  {sub}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={box}>
+            <div style={h}>Completed rides per day</div>
+            <Bars
+              items={data.perDay.map((d) => ({
+                label: d.date.slice(5),
+                value: d.rides,
+                title: `${d.date}: ${d.rides} rides, ${peso(d.income)}`,
+              }))}
+              every={Math.ceil(data.perDay.length / 12)}
+            />
+          </div>
+          <div style={box}>
+            <div style={h}>Busy hours (all days together)</div>
+            <Bars
+              items={data.perHour.map((x) => ({
+                label: String(x.hour),
+                value: x.rides,
+                title: `${x.hour}:00 - ${x.rides} rides`,
+              }))}
+              color={C.navy}
+              every={2}
+            />
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <div style={box}>
+              <div style={h}>By terminal</div>
+              {data.perTerminal.length === 0 && (
+                <p
+                  style={{
+                    fontFamily: IN,
+                    fontSize: 12,
+                    color: C.muted,
+                    margin: 0,
+                  }}
+                >
+                  No completed rides in this period.
+                </p>
+              )}
+              {data.perTerminal.map((x) => (
+                <div
+                  key={x.terminal}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontFamily: GR,
+                    fontSize: 13,
+                    padding: "5px 0",
+                    borderTop: `1px solid ${C.border}`,
+                  }}
+                >
+                  <b>{x.terminal}</b>
+                  <span>
+                    {x.rides} rides - {peso(x.income)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div style={box}>
+              <div style={h}>Top drivers</div>
+              {data.topDrivers.length === 0 && (
+                <p
+                  style={{
+                    fontFamily: IN,
+                    fontSize: 12,
+                    color: C.muted,
+                    margin: 0,
+                  }}
+                >
+                  No completed rides in this period.
+                </p>
+              )}
+              {data.topDrivers.map((d, i) => (
+                <div
+                  key={d.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    fontFamily: GR,
+                    fontSize: 13,
+                    padding: "5px 0",
+                    borderTop: `1px solid ${C.border}`,
+                  }}
+                >
+                  <span>
+                    {i + 1}. <b>{d.name}</b>{" "}
+                    {d.unit && (
+                      <span style={{ color: C.muted }}>({d.unit})</span>
+                    )}
+                  </span>
+                  <span>
+                    {d.rides} rides - {peso(d.income)}
+                    {d.averageStars != null && ` - ${d.averageStars}\u2605`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <p style={{ fontFamily: IN, fontSize: 11.5, color: C.muted }}>
+            Attendance: {data.attendance.distinctDrivers} different drivers
+            checked in on {data.attendance.attendanceRecords} driver-days.
+            Waiting time = from the passenger's request to the driver's card tap
+            (or acceptance).
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Status: is everything working right now? ─────────────────────────────────
+function StatusTab() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await getSystemStatus();
+        if (alive) {
+          setSt(r);
+          setErr("");
+        }
+      } catch (e) {
+        if (alive) setErr("Could not reach the server. " + (e.message || ""));
+      }
+    };
+    load();
+    const id = setInterval(load, 10000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+  const ago = (iso) => (iso ? timeAgo(iso) : "never");
+  const n = st?.numbers;
+  return (
+    <div>
+      {err && (
+        <div
+          style={{
+            background: "#FEE2E2",
+            color: "#991B1B",
+            borderRadius: 10,
+            padding: "10px 14px",
+            fontFamily: GR,
+            fontSize: 13,
+            marginBottom: 10,
+          }}
+        >
+          {err}
+        </div>
+      )}
+      {st && (
+        <>
+          <div
+            style={{
+              background: st.ok ? "#D1FAE5" : "#FEF3C7",
+              color: st.ok ? "#065F46" : "#92400E",
+              borderRadius: 12,
+              padding: "12px 16px",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 15,
+              marginBottom: 12,
+            }}
+          >
+            {st.ok ? "Everything is working" : "Something needs attention"}
+          </div>
+          <div
+            style={{
+              background: C.white,
+              borderRadius: 12,
+              border: `1px solid ${C.border}`,
+              overflow: "hidden",
+              marginBottom: 12,
+            }}
+          >
+            {st.checks.map((c, i) => (
+              <div
+                key={c.key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "12px 16px",
+                  borderTop: i ? `1px solid ${C.border}` : "none",
+                }}
+              >
+                <span
+                  style={{
+                    width: 12,
+                    height: 12,
+                    borderRadius: 6,
+                    background: c.ok ? "#10B981" : "#DC2626",
+                    flexShrink: 0,
+                  }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div
+                    style={{
+                      fontFamily: GR,
+                      fontWeight: 700,
+                      fontSize: 13.5,
+                      color: C.text,
+                    }}
+                  >
+                    {c.label}
+                  </div>
+                  <div style={{ fontFamily: IN, fontSize: 12, color: C.muted }}>
+                    {c.detail}
+                    {c.key === "kiosk" &&
+                      c.apiErrors != null &&
+                      ` - ${c.apiErrors} failed calls in the last 30 s`}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 10,
+            }}
+          >
+            {[
+              ["Drivers online", `${n.driversOnline} / ${n.driversTotal}`],
+              ["In the terminal line", n.inLine],
+              ["Rides waiting", n.pendingRides],
+              ["Last ride requested", ago(n.lastRideAt)],
+              ["Last card tap", ago(n.lastCardTapAt)],
+            ].map(([l, v]) => (
+              <div
+                key={l}
+                style={{
+                  background: C.white,
+                  borderRadius: 12,
+                  border: `1px solid ${C.border}`,
+                  padding: "12px 14px",
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: GR,
+                    fontWeight: 700,
+                    fontSize: 18,
+                    color: C.navy,
+                  }}
+                >
+                  {v}
+                </div>
+                <div style={{ fontFamily: IN, fontSize: 11, color: C.muted }}>
+                  {l}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p
+            style={{
+              fontFamily: IN,
+              fontSize: 11.5,
+              color: C.muted,
+              marginTop: 12,
+            }}
+          >
+            Updates every 10 seconds. The kiosk reports in every 30 seconds.
+          </p>
+        </>
+      )}
+      {!st && !err && (
+        <p style={{ fontFamily: IN, color: C.muted }}>Checking...</p>
+      )}
     </div>
   );
 }
@@ -4920,6 +5499,8 @@ export default function AdminView() {
             ["override", "Override"],
             ["incidents", "Incidents"],
             ["log", "Log"],
+            ["reports", "Reports"],
+            ["status", "Status"],
             ["data", "Data"],
           ].map(([key, label]) => (
             <button
@@ -5000,6 +5581,8 @@ export default function AdminView() {
           />
         )}
         {tab === "fares" && <TariffTab />}
+        {tab === "reports" && <ReportsTab />}
+        {tab === "status" && <StatusTab />}
         {tab === "data" && <DataTab />}
         {tab === "users" && <UsersTab />}
         {tab === "verify" && (
