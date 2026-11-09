@@ -44,6 +44,19 @@ Run `npm run check`, `npm test` and `npm run build` before saying a change works
 - The temp-access value `TEMP_ACCESS_SECONDS` in `api/_settings.js` is a short
   TEST value; check it before real deployment.
 
+## Roles (staff levels)
+Staff accounts are in `users` with a `level`: `marshal` < `admin` < `super_admin`
+(no level = old account = super_admin). The login session role is `admin` (admin
++ super admin) or `marshal`, plus `level`. Staff sessions last 12 h, not 7 days.
+- Use `await requireStaff(db, req, res, ["admin", ...])` from `api/_authz.js` for
+  staff endpoints: it also re-checks the account in the database, so a disabled
+  or demoted account loses access at once. Listing only `"admin"` keeps marshals
+  out by default; add `"marshal"` on purpose where they belong (dispatch, line,
+  override, attendance, incidents, walk-up booking).
+- Super admin only (staff accounts, database export): `requireSuperAdmin`.
+- Staff accounts API is `api/admin.js` `action=accounts|account-create|account-update|account-reset`.
+- The kiosk staff card + PIN (`x-staff-token`) is separate and stays marshal-level.
+
 ## Push notifications (free Web Push)
 `api/_push.js` (shared code) sends them; subscriptions are saved through
 `api/auth.js` actions `push-key` / `push-subscribe` / `push-unsubscribe`

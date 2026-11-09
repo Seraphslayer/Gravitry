@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { getDb } from "./_db.js";
 import { getSessionFromReq, getStaffFromReq } from "./_auth.js";
-import { requireSession, isNonEmptyString } from "./_authz.js";
+import { requireSession, isNonEmptyString, requireStaff } from "./_authz.js";
 import { withinRate } from "./_images.js";
 import { notify, notifyAccepted, msg } from "./_push.js";
 import { tempAccessDeadline } from "./_settings.js";
@@ -114,7 +114,7 @@ async function withinGlobalNfcRate(db) {
 function canSeePassengerDetails(req) {
   if (getStaffFromReq(req)) return true;
   const s = getSessionFromReq(req);
-  return s?.role === "admin" || s?.role === "driver";
+  return s?.role === "admin" || s?.role === "marshal" || s?.role === "driver";
 }
 
 // A ride without who booked it or where exactly they stand. Ride ids are
@@ -663,7 +663,7 @@ export default async function handler(req, res) {
     // request plus the driver's live position, only while the ride is
     // "dispatched" and only if the position is fresh. Owner (or admin) only.
     if (req.method === "GET" && id && action === "track") {
-      const session = requireSession(req, res, ["passenger", "admin"]);
+      const session = await requireStaff(db, req, res, ["passenger", "admin"]);
       if (!session) return;
       const doc = await col.findOne({ _id: id });
       if (!doc) return res.status(404).json({ error: "Request not found" });
@@ -724,7 +724,7 @@ export default async function handler(req, res) {
     // a driver already on a trip is still refused. The ride is stamped with who
     // did it and why, so it shows in the audit trail.
     if (req.method === "POST" && id && action === "override") {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
       if (!session) return;
       const { driverId, reason } = req.body || {};
       if (!isNonEmptyString(driverId))
@@ -839,7 +839,11 @@ export default async function handler(req, res) {
         return res.status(409).json({ error: "Request is no longer pending" });
       }
       if (target.source !== "kiosk") {
-        const session = requireSession(req, res, ["passenger", "admin"]);
+        const session = await requireStaff(db, req, res, [
+          "passenger",
+          "admin",
+          "marshal",
+        ]);
         if (!session) return;
         if (
           session.role === "passenger" &&
@@ -929,13 +933,17 @@ export default async function handler(req, res) {
       // Only the driver who accepted this specific trip (or an admin) may
       // mark it complete - otherwise any caller could free up a tricycle
       // mid-trip or tamper with another driver's dispatch record.
-      const session = requireSession(req, res, ["driver", "admin"]);
+      const session = await requireStaff(db, req, res, [
+        "driver",
+        "admin",
+        "marshal",
+      ]);
       if (!session) return;
 
       // Only a ride in progress can be completed - otherwise a second tap (or a
       // cancelled / already recorded ride) would count the trip twice.
       const filter =
-        session.role === "admin"
+        session.role === "admin" || session.role === "marshal"
           ? { _id: id, status: "dispatched" }
           : { _id: id, driverId: session.driverId, status: "dispatched" };
       const result = await col.findOneAndUpdate(

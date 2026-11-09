@@ -1,7 +1,6 @@
 import { getDb } from "./_db.js";
-import { requireSession } from "./_authz.js";
-import { hashPassword, getSessionFromReq } from "./_auth.js";
-import { randomInt } from "node:crypto";
+import { requireSession, requireStaff } from "./_authz.js";
+import { hashPassword, getSessionFromReq, generatePassword } from "./_auth.js";
 
 // Fields nobody but the login system should ever see or be able to overwrite
 // through this endpoint. The presence fields are only ever written by the
@@ -44,23 +43,6 @@ function passwordError(password) {
   if (!/[^A-Za-z0-9\s]/.test(password))
     return "Password needs a special character (e.g. ! @ # $ %)";
   return null;
-}
-
-// Random password that satisfies the rules above. Shown to the admin once.
-function generatePassword() {
-  const pick = (chars) => chars[randomInt(chars.length)];
-  const lower = "abcdefghjkmnpqrstuvwxyz";
-  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const digit = "23456789";
-  const special = "!@#$%";
-  const all = lower + upper + digit;
-  const chars = [pick(lower), pick(upper), pick(digit), pick(special)];
-  while (chars.length < 10) chars.push(pick(all));
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = randomInt(i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join("");
 }
 
 const clean = (v, max = 80) =>
@@ -213,7 +195,7 @@ export default async function handler(req, res) {
     // Admin only. A blank password is replaced with a generated one, returned
     // once so the admin can hand it to the driver.
     if (req.method === "POST" && (action === "create" || action === "import")) {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
 
       if (action === "create") {
@@ -250,7 +232,7 @@ export default async function handler(req, res) {
     // ONCE for the admin to hand over, and clears any login lockout so the
     // driver can sign in right away.
     if (req.method === "POST" && action === "reset-password") {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       if (!id) return res.status(400).json({ error: "Choose a driver" });
       const driver = await col.findOne({ _id: id });
@@ -280,7 +262,7 @@ export default async function handler(req, res) {
     // Every driver's last shared position for the admin map. Never part of the
     // public driver list.
     if (req.method === "GET" && action === "locations") {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const docs = await col
         .find({}, { projection: { passwordHash: 0, username: 0 } })
@@ -333,7 +315,7 @@ export default async function handler(req, res) {
 
     if (req.method === "PATCH") {
       // Only TODA admins can edit driver records.
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
 
       if (!id)

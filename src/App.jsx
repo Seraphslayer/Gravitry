@@ -9,16 +9,18 @@ import LoginModal from "./LoginModal.jsx";
 import PassengerApp from "./PassengerApp.jsx";
 import { AuthProvider, useAuth } from "./AuthContext.jsx";
 
+// role: one role, or a list of roles that may open the page
 function AuthGate({ role, children }) {
+  const allowed = Array.isArray(role) ? role : [role];
   const { user, loading, logout } = useAuth();
 
   if (loading) {
     return <div style={{ minHeight: "100%", background: "#0B2D48" }} />;
   }
   if (!user) {
-    return <LoginModal role={role} />;
+    return <LoginModal role={allowed[0]} allowed={allowed} />;
   }
-  if (user.role !== role) {
+  if (!allowed.includes(user.role)) {
     return (
       <div
         style={{
@@ -106,7 +108,7 @@ export default function App() {
           <Route
             path="/admin"
             element={
-              <AuthGate role="admin">
+              <AuthGate role={["admin", "marshal"]}>
                 <AdminView />
               </AuthGate>
             }

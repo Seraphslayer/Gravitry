@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Truck, Star, Wifi, X } from "lucide-react";
 import L from "leaflet";
 import PushToggle from "./PushToggle.jsx";
+import { useAuth } from "./AuthContext.jsx";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import {
   C,
@@ -48,6 +49,10 @@ import {
   getAttendance,
   getAllQueues,
   getDriverLocations,
+  getAccounts,
+  createAccount,
+  updateAccount,
+  resetAccountPassword,
   getStaffCards,
   createStaffCard,
   updateStaffCard,
@@ -2847,7 +2852,7 @@ function DataTab() {
   );
 }
 
-function OverrideTab({ waiting, drivers, loading, onChanged }) {
+function OverrideTab({ waiting, drivers, loading, onChanged, canManageCards }) {
   const [err, setErr] = useNotice("");
   const [pick, setPick] = useState({});
   const [reason, setReason] = useState({});
@@ -3038,7 +3043,7 @@ function OverrideTab({ waiting, drivers, loading, onChanged }) {
           </div>
         </div>
       ))}
-      <StaffCards />
+      {canManageCards && <StaffCards />}
     </div>
   );
 }
@@ -5312,8 +5317,338 @@ function VerifyTab({ items, loading, onChanged }) {
   );
 }
 
+// ---- Staff accounts (super admin only) ---------------------------------------
+const LEVEL_INFO = {
+  marshal: {
+    label: "Marshal",
+    help: "Runs the terminal: dispatch, line, walk-up bookings, incidents.",
+  },
+  admin: {
+    label: "Admin",
+    help: "Marshal + drivers, tricycles, tariff, verification, reports.",
+  },
+  super_admin: {
+    label: "Super admin",
+    help: "Everything, plus staff accounts and data export.",
+  },
+};
+const apiMessage = (e) =>
+  String(e?.message || e).replace(/^API [^:]*failed: /, "");
+
+function AccountsTab() {
+  const { user } = useAuth();
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [shown, setShown] = useState(null); // { username, password } shown once
+  const [form, setForm] = useState({
+    username: "",
+    name: "",
+    level: "marshal",
+  });
+
+  const load = useCallback(async () => {
+    try {
+      setRows(await getAccounts());
+    } catch (e) {
+      setErr(apiMessage(e));
+    }
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const run = async (fn) => {
+    setBusy(true);
+    setErr("");
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setErr(apiMessage(e));
+    }
+    setBusy(false);
+  };
+
+  const add = (e) => {
+    e.preventDefault();
+    run(async () => {
+      const made = await createAccount(form);
+      setShown({ username: made.username, password: made.password });
+      setForm({ username: "", name: "", level: form.level });
+    });
+  };
+  const reset = (a) => {
+    if (!window.confirm(`Make a new password for ${a.name}?`)) return;
+    run(async () => {
+      const r = await resetAccountPassword(a.id);
+      setShown({ username: r.username, password: r.password });
+    });
+  };
+
+  const box = {
+    background: C.white,
+    borderRadius: 12,
+    border: `1px solid ${C.border}`,
+    padding: 16,
+    marginBottom: 14,
+  };
+  const input = {
+    border: `1px solid ${C.border}`,
+    borderRadius: 8,
+    padding: "8px 10px",
+    fontFamily: IN,
+    fontSize: 13,
+    minWidth: 0,
+  };
+  const small = {
+    background: "none",
+    border: `1px solid ${C.border}`,
+    borderRadius: 8,
+    padding: "4px 9px",
+    fontFamily: GR,
+    fontSize: 11,
+    fontWeight: 600,
+    color: C.muted,
+    cursor: "pointer",
+  };
+
+  return (
+    <div>
+      <div style={box}>
+        <div
+          style={{
+            fontFamily: GR,
+            fontWeight: 700,
+            fontSize: 14,
+            color: C.navy,
+            marginBottom: 4,
+          }}
+        >
+          Staff accounts
+        </div>
+        <div
+          style={{
+            fontFamily: IN,
+            fontSize: 12,
+            color: C.muted,
+            marginBottom: 10,
+          }}
+        >
+          {Object.values(LEVEL_INFO).map((l) => (
+            <div key={l.label}>
+              <b>{l.label}:</b> {l.help}
+            </div>
+          ))}
+          <div style={{ marginTop: 4 }}>
+            Accounts are disabled, never deleted, so the log keeps its history.
+          </div>
+        </div>
+        <form
+          onSubmit={add}
+          style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
+        >
+          <input
+            style={{ ...input, flex: "1 1 130px" }}
+            placeholder="Username"
+            value={form.username}
+            onChange={(e) => setForm({ ...form, username: e.target.value })}
+            autoCapitalize="none"
+          />
+          <input
+            style={{ ...input, flex: "1 1 160px" }}
+            placeholder="Full name"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
+          <select
+            style={input}
+            value={form.level}
+            onChange={(e) => setForm({ ...form, level: e.target.value })}
+          >
+            {Object.entries(LEVEL_INFO).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v.label}
+              </option>
+            ))}
+          </select>
+          <button
+            disabled={busy}
+            style={{
+              background: C.navy,
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              padding: "8px 16px",
+              fontFamily: GR,
+              fontWeight: 700,
+              fontSize: 12.5,
+              cursor: "pointer",
+            }}
+          >
+            Add account
+          </button>
+        </form>
+        {err && (
+          <div
+            style={{
+              color: "#B91C1C",
+              fontSize: 12,
+              fontFamily: IN,
+              marginTop: 8,
+            }}
+          >
+            {err}
+          </div>
+        )}
+        {shown && (
+          <div
+            style={{
+              marginTop: 10,
+              background: "#FEF3C7",
+              borderRadius: 8,
+              padding: "8px 10px",
+              fontFamily: IN,
+              fontSize: 12,
+              color: "#78350F",
+            }}
+          >
+            Username <b>{shown.username}</b> - password{" "}
+            <b style={{ fontFamily: "monospace" }}>{shown.password}</b>
+            <br />
+            Shown once. Give it to the person now.
+            <button
+              onClick={() => setShown(null)}
+              style={{
+                marginLeft: 8,
+                border: "none",
+                background: "none",
+                cursor: "pointer",
+                fontWeight: 700,
+              }}
+            >
+              Hide
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div style={{ ...box, padding: 0, overflow: "hidden" }}>
+        {!rows ? (
+          <div
+            style={{
+              padding: 16,
+              fontFamily: IN,
+              fontSize: 12.5,
+              color: C.muted,
+            }}
+          >
+            Loading...
+          </div>
+        ) : (
+          rows.map((a) => {
+            const me = a.id === user?.id;
+            return (
+              <div
+                key={a.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  padding: "11px 14px",
+                  borderBottom: `1px solid ${C.border}`,
+                  opacity: a.active ? 1 : 0.55,
+                }}
+              >
+                <div style={{ flex: "1 1 150px", minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontFamily: GR,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      color: C.text,
+                    }}
+                  >
+                    {a.name}{" "}
+                    {me && (
+                      <span style={{ color: C.muted, fontWeight: 500 }}>
+                        (you)
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    style={{ fontFamily: IN, fontSize: 11.5, color: C.muted }}
+                  >
+                    {a.username}
+                    {!a.active && " · disabled"}
+                    {a.lastLoginAt && ` · last login ${fmtTime(a.lastLoginAt)}`}
+                  </div>
+                </div>
+                <select
+                  style={input}
+                  value={a.level}
+                  disabled={busy || me}
+                  onChange={(e) =>
+                    run(() => updateAccount(a.id, { level: e.target.value }))
+                  }
+                >
+                  {Object.entries(LEVEL_INFO).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+                <button style={small} disabled={busy} onClick={() => reset(a)}>
+                  Reset password
+                </button>
+                <button
+                  style={small}
+                  disabled={busy || me}
+                  onClick={() =>
+                    run(() => updateAccount(a.id, { active: !a.active }))
+                  }
+                >
+                  {a.active ? "Disable" : "Enable"}
+                </button>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// What each tab needs. Marshals run the terminal; admins manage the system;
+// the super admin also manages staff accounts and data export. (The server
+// enforces this too; hiding a tab is only for tidiness.)
+const LEVEL_RANK = { marshal: 1, admin: 2, super_admin: 3 };
+const ADMIN_TABS = [
+  ["drivers", "Drivers", "admin"],
+  ["tricycles", "Tricycles", "admin"],
+  ["fares", "Tariff", "admin"],
+  ["users", "Users", "admin"],
+  ["verify", "Verify", "admin"],
+  ["map", "Map", "admin"],
+  ["attendance", "Attendance", "marshal"],
+  ["override", "Override", "marshal"],
+  ["incidents", "Incidents", "marshal"],
+  ["log", "Log", "marshal"],
+  ["reports", "Reports", "admin"],
+  ["status", "Status", "admin"],
+  ["data", "Data", "super_admin"],
+  ["accounts", "Accounts", "super_admin"],
+];
+
 export default function AdminView() {
-  const [tab, setTab] = useState("drivers");
+  const { user, logout } = useAuth();
+  const level = user?.level || "admin";
+  const isMarshal = level === "marshal";
+  const myTabs = ADMIN_TABS.filter(
+    ([, , min]) => LEVEL_RANK[level] >= LEVEL_RANK[min],
+  );
+  const [tab, setTab] = useState(isMarshal ? "override" : "drivers");
   const [drivers, setDrivers] = useState([]);
   const [tricycles, setTricycles] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -5335,15 +5670,17 @@ export default function AdminView() {
     } catch {
       /* keep last known good state */
     }
-    try {
-      setVerifs(await getVerifications());
-    } catch {
-      /* keep last known list */
-    }
-    try {
-      setUserStats(await getUserStats());
-    } catch {
-      /* keep last known counts */
+    if (!isMarshal) {
+      try {
+        setVerifs(await getVerifications());
+      } catch {
+        /* keep last known list */
+      }
+      try {
+        setUserStats(await getUserStats());
+      } catch {
+        /* keep last known counts */
+      }
     }
     try {
       setReports(await getReports());
@@ -5351,7 +5688,7 @@ export default function AdminView() {
       /* keep last known reports */
     }
     setLoading(false);
-  }, []);
+  }, [isMarshal]);
 
   useEffect(() => {
     loadAll();
@@ -5410,7 +5747,7 @@ export default function AdminView() {
               textTransform: "uppercase",
             }}
           >
-            Admin Dashboard
+            {isMarshal ? "Marshal Console" : "Admin Dashboard"}
           </div>
           <div
             style={{
@@ -5423,7 +5760,45 @@ export default function AdminView() {
             Mary Cris Complex TODA
           </div>
         </div>
-        <PushToggle style={{ marginLeft: "auto" }} />
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          <div
+            className="hide-xs"
+            style={{
+              color: "rgba(255,255,255,0.75)",
+              fontFamily: IN,
+              fontSize: 11.5,
+              textAlign: "right",
+            }}
+          >
+            {user?.name}
+            <br />
+            {LEVEL_INFO[level]?.label}
+          </div>
+          <PushToggle />
+          <button
+            onClick={logout}
+            style={{
+              background: "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              padding: "6px 11px",
+              fontFamily: GR,
+              fontWeight: 600,
+              fontSize: 11.5,
+              cursor: "pointer",
+            }}
+          >
+            Log out
+          </button>
+        </div>
       </div>
 
       <div
@@ -5433,51 +5808,53 @@ export default function AdminView() {
           padding: "clamp(12px,3vw,20px)",
         }}
       >
-        <div
-          className="admin-stats-grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4,1fr)",
-            gap: 10,
-            marginBottom: 20,
-          }}
-        >
-          {stats.map((s) => (
-            <div
-              key={s.label}
-              style={{
-                background: C.white,
-                borderRadius: 12,
-                padding: "14px 16px",
-                border: `1px solid ${C.border}`,
-              }}
-            >
+        {!isMarshal && (
+          <div
+            className="admin-stats-grid"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4,1fr)",
+              gap: 10,
+              marginBottom: 20,
+            }}
+          >
+            {stats.map((s) => (
               <div
+                key={s.label}
                 style={{
-                  fontSize: "clamp(20px,5vw,26px)",
-                  fontWeight: 700,
-                  fontFamily: GR,
-                  color: C.navy,
+                  background: C.white,
+                  borderRadius: 12,
+                  padding: "14px 16px",
+                  border: `1px solid ${C.border}`,
                 }}
               >
-                {s.value}
+                <div
+                  style={{
+                    fontSize: "clamp(20px,5vw,26px)",
+                    fontWeight: 700,
+                    fontFamily: GR,
+                    color: C.navy,
+                  }}
+                >
+                  {s.value}
+                </div>
+                <div
+                  style={{
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    fontFamily: GR,
+                    color: C.text,
+                  }}
+                >
+                  {s.label}
+                </div>
+                <div style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
+                  {s.sub}
+                </div>
               </div>
-              <div
-                style={{
-                  fontSize: 11.5,
-                  fontWeight: 600,
-                  fontFamily: GR,
-                  color: C.text,
-                }}
-              >
-                {s.label}
-              </div>
-              <div style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
-                {s.sub}
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
 
         <div
           style={{
@@ -5490,21 +5867,7 @@ export default function AdminView() {
             overflowX: "auto",
           }}
         >
-          {[
-            ["drivers", "Drivers"],
-            ["tricycles", "Tricycles"],
-            ["fares", "Tariff"],
-            ["users", "Users"],
-            ["verify", "Verify"],
-            ["map", "Map"],
-            ["attendance", "Attendance"],
-            ["override", "Override"],
-            ["incidents", "Incidents"],
-            ["log", "Log"],
-            ["reports", "Reports"],
-            ["status", "Status"],
-            ["data", "Data"],
-          ].map(([key, label]) => (
+          {myTabs.map(([key, label]) => (
             <button
               key={key}
               onClick={() => setTab(key)}
@@ -5586,6 +5949,7 @@ export default function AdminView() {
         {tab === "reports" && <ReportsTab />}
         {tab === "status" && <StatusTab />}
         {tab === "data" && <DataTab />}
+        {tab === "accounts" && <AccountsTab />}
         {tab === "users" && <UsersTab />}
         {tab === "verify" && (
           <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
@@ -5594,6 +5958,7 @@ export default function AdminView() {
         {tab === "attendance" && <AttendanceTab drivers={drivers} />}
         {tab === "override" && (
           <OverrideTab
+            canManageCards={!isMarshal}
             waiting={waiting}
             drivers={drivers}
             loading={loading}

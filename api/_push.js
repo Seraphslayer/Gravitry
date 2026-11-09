@@ -64,12 +64,14 @@ export function validSubscription(sub) {
 export const subscriptionId = (endpoint) =>
   createHash("sha256").update(endpoint).digest("hex").slice(0, 40);
 
-// who: { role: "driver" | "passenger" | "admin", id?: string, ids?: string[] }
-// (admin with no id = every admin). payload: { title, body, url?, tag?, urgent? }
+// who: { role: "driver" | "passenger" | "admin" | "marshal" (or a list of them),
+// id?: string, ids?: string[] } (no id = everyone with that role). payload: { title, body, url?, tag?, urgent? }
 export async function notify(db, who, payload) {
   try {
     if (!pushEnabled()) return;
-    const filter = { role: who.role };
+    const filter = {
+      role: Array.isArray(who.role) ? { $in: who.role } : who.role,
+    };
     if (who.ids) filter.userId = { $in: who.ids };
     else if (who.id) filter.userId = who.id;
     if (who.ids && !who.ids.length) return;

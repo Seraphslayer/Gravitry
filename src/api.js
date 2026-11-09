@@ -409,3 +409,21 @@ export const removePushSubscription = (endpoint) =>
     method: "POST",
     body: JSON.stringify({ endpoint }),
   });
+
+// Staff accounts (super admin only). Passwords are made by the server and
+// shown once: create and reset return { ..., password }.
+export const getAccounts = () => req("admin?action=accounts");
+export const createAccount = (body) =>
+  req("admin?action=account-create", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+export const updateAccount = (id, patch) =>
+  req(`admin?action=account-update&id=${encodeURIComponent(id)}`, {
+    method: "POST",
+    body: JSON.stringify(patch),
+  });
+export const resetAccountPassword = (id) =>
+  req(`admin?action=account-reset&id=${encodeURIComponent(id)}`, {
+    method: "POST",
+  });

@@ -3,11 +3,18 @@ import {
   hashPassword,
   comparePassword,
   signSession,
+  STAFF_SESSION_SECONDS,
   setSessionCookie,
   clearSessionCookie,
   getSessionFromReq,
 } from "./_auth.js";
-import { isNonEmptyString, requireSession } from "./_authz.js";
+import {
+  isNonEmptyString,
+  requireSession,
+  requireStaff,
+  levelOf,
+  roleForLevel,
+} from "./_authz.js";
 import { isValidPhoto, withinRate } from "./_images.js";
 import {
   pushEnabled,
@@ -394,18 +401,27 @@ export default async function handler(req, res) {
         admin?.passwordHash &&
         comparePassword(password, admin.passwordHash)
       ) {
+        if (admin.active === false) {
+          return res
+            .status(403)
+            .json({ error: "This account has been disabled" });
+        }
         await clearLoginFailures(db, key);
-        const token = signSession({
-          sub: admin._id,
-          role: "admin",
-          name: admin.name || admin.username,
-        });
-        setSessionCookie(res, token);
-        return res.status(200).json({
-          role: "admin",
-          id: admin._id,
-          name: admin.name || admin.username,
-        });
+        const level = levelOf(admin);
+        const role = roleForLevel(level);
+        const name = admin.name || admin.username;
+        const token = signSession(
+          { sub: admin._id, role, level, name },
+          STAFF_SESSION_SECONDS,
+        );
+        setSessionCookie(res, token, STAFF_SESSION_SECONDS);
+        await db
+          .collection("users")
+          .updateOne(
+            { _id: admin._id },
+            { $set: { lastLoginAt: new Date().toISOString() } },
+          );
+        return res.status(200).json({ role, level, id: admin._id, name });
       }
 
       const driver = await db
@@ -472,10 +488,11 @@ export default async function handler(req, res) {
         .json({ enabled: pushEnabled(), publicKey: vapidPublicKey() });
     }
     if (req.method === "POST" && action === "push-subscribe") {
-      const session = requireSession(req, res, [
+      const session = await requireStaff(db, req, res, [
         "passenger",
         "driver",
         "admin",
+        "marshal",
       ]);
       if (!session) return;
       if (!pushEnabled())
@@ -511,10 +528,11 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
     if (req.method === "POST" && action === "push-unsubscribe") {
-      const session = requireSession(req, res, [
+      const session = await requireStaff(db, req, res, [
         "passenger",
         "driver",
         "admin",
+        "marshal",
       ]);
       if (!session) return;
       const endpoint = req.body?.endpoint;
@@ -534,6 +552,16 @@ export default async function handler(req, res) {
       const session = getSessionFromReq(req);
       if (!session) return res.status(401).json({ error: "Not logged in" });
       let passengerInfo = {};
+      let staffInfo = {};
+      if (session.role === "admin" || session.role === "marshal") {
+        const u = await db.collection("users").findOne({ _id: session.sub });
+        if (!u || u.active === false) {
+          clearSessionCookie(res);
+          return res.status(401).json({ error: "Account not found" });
+        }
+        const level = levelOf(u);
+        staffInfo = { level, role: roleForLevel(level) };
+      }
       if (session.role === "passenger") {
         const p = await db.collection("passengers").findOne(
           { _id: session.passengerId },
@@ -560,6 +588,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         ...passengerInfo,
         role: session.role,
+        ...staffInfo,
         id: session.sub,
         name: session.name,
         driverId: session.driverId,

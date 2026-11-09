@@ -28,6 +28,9 @@ function seed() {
     { _id: "DR-002", ts: "2026-10-25T10:00:00.000Z" },
   );
   T("staff_cards").push({ _id: "9999999999", name: "Ana", pinHash: "h" });
+  // the test cookie's user ("u") is a super admin (an older account with no
+  // level counts as one)
+  T("users").push({ _id: "u", username: "boss", passwordHash: "h" });
   return T;
 }
 const exp = async (q, who = "admin") =>

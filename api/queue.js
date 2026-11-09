@@ -1,5 +1,5 @@
 import { getDb } from "./_db.js";
-import { requireSession } from "./_authz.js";
+import { requireSession, requireStaff } from "./_authz.js";
 import { withinRate } from "./_images.js";
 import {
   expiredDocsOf,
@@ -28,7 +28,7 @@ export default async function handler(req, res) {
     const { action, terminal } = req.query;
 
     if (req.method === "GET" && action === "all") {
-      if (!requireSession(req, res, ["admin"])) return;
+      if (!(await requireStaff(db, req, res, ["admin", "marshal"]))) return;
       const all = [];
       for (const t of TERMINALS) all.push(await lineSnapshot(db, t.id));
       return res.status(200).json(all);

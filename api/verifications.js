@@ -1,5 +1,5 @@
 import { getDb } from "./_db.js";
-import { requireSession, isNonEmptyString } from "./_authz.js";
+import { requireSession, isNonEmptyString, requireStaff } from "./_authz.js";
 import { tempAccessDeadline, MAX_TEMP_ACCESS_SECONDS } from "./_settings.js";
 
 // Admin-only. TODA staff use this to review the government ID photo and
@@ -17,10 +17,10 @@ const DISCOUNT_CHOICES = ["none", "student", "senior", "pwd"];
 
 export default async function handler(req, res) {
   try {
-    const session = requireSession(req, res, ["admin"]);
+    const db = await getDb();
+    const session = await requireStaff(db, req, res, ["admin"]);
     if (!session) return;
 
-    const db = await getDb();
     const passengers = db.collection("passengers");
     const verifications = db.collection("verifications");
     const { id, action } = req.query;

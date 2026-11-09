@@ -1,5 +1,5 @@
 import { getDb } from "./_db.js";
-import { requireSession, isNonEmptyString } from "./_authz.js";
+import { requireSession, isNonEmptyString, requireStaff } from "./_authz.js";
 import { withinRate } from "./_images.js";
 import { notify, msg } from "./_push.js";
 
@@ -178,7 +178,7 @@ export default async function handler(req, res) {
       };
       await col.insertOne(doc);
       // TODA staff get it on their phones even if the admin page is closed.
-      await notify(db, { role: "admin" }, msg.sos(doc));
+      await notify(db, { role: ["admin", "marshal"] }, msg.sos(doc));
       return res.status(201).json({ id: doc._id, kind, ts: doc.ts });
     }
 
@@ -208,7 +208,7 @@ export default async function handler(req, res) {
     // Small on purpose: just what the SOS banner needs, so the admin page can
     // ask for it often without loading the whole report history.
     if (req.method === "GET" && action === "alerts") {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
       if (!session) return;
       const docs = await col
         .find({ status: { $in: ["open", "acknowledged"] } })
@@ -236,7 +236,7 @@ export default async function handler(req, res) {
 
     // ---- admin: list ---------------------------------------------------------
     if (req.method === "GET" && !id) {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
       if (!session) return;
       const docs = await col.find({}).sort({ ts: -1 }).toArray();
       return res.status(200).json(docs);
@@ -248,7 +248,7 @@ export default async function handler(req, res) {
       id &&
       (action === "ack" || action === "resolve")
     ) {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
       if (!session) return;
       const note =
         typeof req.body?.note === "string"

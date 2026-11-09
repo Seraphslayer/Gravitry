@@ -3,7 +3,7 @@ import { Lock, User, LogIn } from "lucide-react";
 import { C, GR, IN, Logo, useNotice } from "./shared.jsx";
 import { useAuth } from "./AuthContext.jsx";
 
-export default function LoginModal({ role }) {
+export default function LoginModal({ role, allowed }) {
   const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -18,7 +18,7 @@ export default function LoginModal({ role }) {
     setError(null);
     try {
       const me = await login(username.trim(), password);
-      if (role && me.role !== role) {
+      if (role && !(allowed || [role]).includes(me.role)) {
         setError(`This account isn't authorized for the ${label}.`);
       }
     } catch {
