@@ -60,6 +60,11 @@ Staff accounts are in `users` with a `level`: `marshal` < `admin` < `super_admin
   staff token) books a kiosk-style ride (`source:"kiosk"`, `walkup:true`, priority 0)
   for a passenger with no app. Same signed quote as the kiosk. `walkupContact` and
   `bookedBy` are staff/driver-only (stripped in `publicView`). UI: Walk-up tab.
+- Incidents (`api/reports.js`): status `open -> acknowledged -> resolved` (+ `reopen`,
+  admin only). Actions `ack|assign|note|resolve|reopen`; every step is appended to
+  `timeline`. Resolve takes an `outcome` (resolved / false_alarm / referred /
+  no_action). An SOS unanswered for 3 min is `overdue`. Reports without a
+  `timeline` (older ones) get one built by `timelineOf`.
 
 ## Push notifications (free Web Push)
 `api/_push.js` (shared code) sends them; subscriptions are saved through

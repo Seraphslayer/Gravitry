@@ -153,6 +153,12 @@ export const msg = {
     tag: `report-${rep._id}`,
     urgent: rep.kind === "sos",
   }),
+  reportResolved: (rep) => ({
+    title: "Naresolba na ang report mo",
+    body: rep.resolutionNote || "Tapos na ang report mo. Salamat!",
+    url: "/",
+    tag: `report-${rep._id}`,
+  }),
   reportSeen: (rep) => ({
     title: "Natanggap ng TODA staff ang report mo",
     body: rep.acknowledgedNote || "Papunta na ang tulong",

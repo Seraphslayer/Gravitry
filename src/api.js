@@ -274,11 +274,15 @@ export const getReportStatus = (id) =>
   req(`reports?id=${encodeURIComponent(id)}&action=status`);
 export const getAlerts = () => req("reports?action=alerts");
 // action: "ack" | "resolve"
-export const updateReport = (id, action, note) =>
+// action: ack | assign | note | resolve | reopen. extra: { userId } for assign,
+// { outcome } for resolve (resolved | false_alarm | referred | no_action).
+export const updateReport = (id, action, note, extra = {}) =>
   req(`reports?id=${encodeURIComponent(id)}&action=${action}`, {
     method: "POST",
-    body: JSON.stringify({ note: note || "" }),
+    body: JSON.stringify({ note: note || "", ...extra }),
   });
+// Active staff, for "assign to".
+export const getReportStaff = () => req("reports?action=staff");
 
 // -- Kiosk staff (admin NFC card + PIN) and attendance ---------------------
 // Kiosk: card tap + PIN -> short-lived token { token, name, expiresInSeconds }

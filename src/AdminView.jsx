@@ -67,6 +67,7 @@ import {
   updateStaffCard,
   deleteStaffCard,
   updateReport,
+  getReportStaff,
   getPassengers,
   setTimeLeft,
   getVerificationPhotos,
@@ -2196,7 +2197,11 @@ function ReportsTab() {
       `${data.incidents.sos} / ${data.incidents.incidents}`,
       data.incidents.averageResponseMinutes == null
         ? "no responses yet"
-        : `staff replied in ${data.incidents.averageResponseMinutes} min on average`,
+        : `staff replied in ${data.incidents.averageResponseMinutes} min` +
+          (data.incidents.averageResolveMinutes == null
+            ? ""
+            : `, resolved in ${data.incidents.averageResolveMinutes} min`) +
+          " on average",
     ],
   ];
 
@@ -3852,6 +3857,8 @@ function SosBanner({ onOpen, onChanged }) {
           {a.reporter?.unit ? ` · ${a.reporter.unit}` : ""}) ·{" "}
           {a.status === "open" ? "waiting " : "acknowledged · "}
           {waited(a.ts)}
+          {a.overdue && <b> · OVERDUE</b>}
+          {a.assignedTo && <> · {a.assignedTo} is on it</>}
           {a.reporter?.phone && (
             <>
               {" · "}
@@ -3916,36 +3923,125 @@ function SosBanner({ onOpen, onChanged }) {
   );
 }
 
+const OUTCOME_LABEL = {
+  resolved: "Resolved",
+  false_alarm: "False alarm",
+  referred: "Referred (police / barangay / hospital)",
+  no_action: "No action needed",
+};
+
+const EVENT_TEXT = {
+  created: "Reported",
+  acknowledged: "Acknowledged",
+  assigned: "Assigned",
+  note: "Update",
+  resolved: "Resolved",
+  reopened: "Reopened",
+};
+
+function IncidentTimeline({ events }) {
+  return (
+    <div
+      style={{
+        borderLeft: `2px solid ${C.border}`,
+        marginLeft: 4,
+        paddingLeft: 12,
+        marginTop: 6,
+      }}
+    >
+      {events.map((e, i) => (
+        <div key={i} style={{ fontSize: 12, color: C.text, marginBottom: 6 }}>
+          <b>
+            {EVENT_TEXT[e.type] || e.type}
+            {e.type === "assigned" && e.to?.name ? ` to ${e.to.name}` : ""}
+            {e.type === "resolved" && e.outcome
+              ? `: ${OUTCOME_LABEL[e.outcome] || e.outcome}`
+              : ""}
+          </b>
+          <span style={{ color: C.muted }}>
+            {" "}
+            · {e.by?.name || "Staff"} · {new Date(e.at).toLocaleString()}
+          </span>
+          {e.note && (
+            <div style={{ color: C.text, whiteSpace: "pre-wrap" }}>
+              {e.note}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function IncidentsTab({ items, loading, onChanged }) {
+  const { user } = useAuth();
+  const canReopen = user?.level === "admin" || user?.level === "super_admin";
   const [err, setErr] = useNotice("");
   const [notes, setNotes] = useState({});
+  const [outcomes, setOutcomes] = useState({});
+  const [assignTo, setAssignTo] = useState({});
+  const [openHistory, setOpenHistory] = useState({});
+  const [staff, setStaff] = useState([]);
   const [busy, setBusy] = useState("");
   const [filter, setFilter] = useState("open");
 
+  useEffect(() => {
+    getReportStaff()
+      .then(setStaff)
+      .catch(() => {});
+  }, []);
+
+  const mine = (x) => x.assignedTo?.id === user?.id;
   const shown = items.filter((x) =>
     filter === "all"
       ? true
-      : filter === "open"
-        ? x.status !== "resolved"
-        : x.status === "resolved",
+      : filter === "mine"
+        ? x.status !== "resolved" && mine(x)
+        : filter === "open"
+          ? x.status !== "resolved"
+          : x.status === "resolved",
   );
 
-  const act = async (id, action) => {
+  const act = async (id, action, extra) => {
     setBusy(id + action);
+    setErr("");
     try {
-      await updateReport(id, action, notes[id] || "");
+      await updateReport(id, action, notes[id] || "", extra);
+      if (action !== "assign") setNotes((n) => ({ ...n, [id]: "" }));
       onChanged();
     } catch (e) {
-      setErr(e.message || "Failed");
+      setErr(apiMessage(e) || "Failed");
     }
     setBusy("");
   };
 
+  const btn = (primary) => ({
+    padding: "8px 14px",
+    borderRadius: 8,
+    border: primary ? "none" : `1px solid ${C.navy}`,
+    background: primary ? C.navy : C.white,
+    color: primary ? "#fff" : C.navy,
+    fontFamily: GR,
+    fontWeight: 700,
+    fontSize: 13,
+    cursor: "pointer",
+  });
+  const field = {
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    fontFamily: GR,
+    fontSize: 13,
+  };
+
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <div
+        style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}
+      >
         {[
           ["open", "Open"],
+          ["mine", "Mine"],
           ["resolved", "Resolved"],
           ["all", "All"],
         ].map(([k, l]) => (
@@ -3997,12 +4093,13 @@ function IncidentsTab({ items, loading, onChanged }) {
       )}
       {shown.map((r) => {
         const sos = r.kind === "sos";
+        const resolved = r.status === "resolved";
         return (
           <div
             key={r._id}
             style={{
               background: C.white,
-              border: `1px solid ${sos && r.status === "open" ? "#DC2626" : C.border}`,
+              border: `1px solid ${(sos && r.status === "open") || r.overdue ? "#DC2626" : C.border}`,
               borderLeft: `5px solid ${sos ? "#DC2626" : "#F59E0B"}`,
               borderRadius: 12,
               padding: 14,
@@ -4031,6 +4128,12 @@ function IncidentsTab({ items, loading, onChanged }) {
               >
                 {r.status}
               </Badge>
+              {r.overdue && (
+                <Badge variant="red">Overdue: nobody answered</Badge>
+              )}
+              {r.assignedTo && (
+                <Badge variant="gray">Handled by {r.assignedTo.name}</Badge>
+              )}
               <span
                 style={{ marginLeft: "auto", fontSize: 11.5, color: C.muted }}
               >
@@ -4087,71 +4190,148 @@ function IncidentsTab({ items, loading, onChanged }) {
                 <span style={{ color: C.muted }}>No location shared</span>
               )}
             </div>
-            {r.resolutionNote && (
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
-                Note: {r.resolutionNote}
+            {resolved && (
+              <div style={{ fontSize: 12.5, color: C.text, marginTop: 6 }}>
+                <b>{OUTCOME_LABEL[r.outcome || "resolved"]}</b>
+                {r.resolutionNote && <>: {r.resolutionNote}</>}
               </div>
             )}
-            {r.status !== "resolved" && (
+
+            <button
+              onClick={() =>
+                setOpenHistory((h) => ({ ...h, [r._id]: !h[r._id] }))
+              }
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                marginTop: 8,
+                color: C.navy,
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              {openHistory[r._id] ? "Hide" : "Show"} history (
+              {r.timeline?.length || 0})
+            </button>
+            {openHistory[r._id] && (
+              <IncidentTimeline events={r.timeline || []} />
+            )}
+
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                marginTop: 10,
+                flexWrap: "wrap",
+              }}
+            >
+              <input
+                value={notes[r._id] || ""}
+                maxLength={400}
+                onChange={(e) =>
+                  setNotes({ ...notes, [r._id]: e.target.value })
+                }
+                placeholder={resolved ? "Reason / update" : "Note (optional)"}
+                style={{ ...field, flex: "1 1 180px" }}
+              />
+              {!resolved && r.status === "open" && (
+                <button
+                  disabled={!!busy}
+                  onClick={() => act(r._id, "ack")}
+                  style={btn(false)}
+                >
+                  Acknowledge
+                </button>
+              )}
+              {!resolved && !mine(r) && (
+                <button
+                  disabled={!!busy}
+                  onClick={() => act(r._id, "assign")}
+                  style={btn(false)}
+                >
+                  I'll take it
+                </button>
+              )}
+              <button
+                disabled={!!busy || !(notes[r._id] || "").trim()}
+                onClick={() => act(r._id, "note")}
+                style={btn(false)}
+              >
+                Add update
+              </button>
+            </div>
+
+            {!resolved && (
               <div
                 style={{
                   display: "flex",
                   gap: 8,
-                  marginTop: 10,
+                  marginTop: 8,
                   flexWrap: "wrap",
                 }}
               >
-                <input
-                  value={notes[r._id] || ""}
-                  maxLength={400}
+                <select
+                  value={assignTo[r._id] || ""}
                   onChange={(e) =>
-                    setNotes({ ...notes, [r._id]: e.target.value })
+                    setAssignTo({ ...assignTo, [r._id]: e.target.value })
                   }
-                  placeholder="Note (optional)"
-                  style={{
-                    flex: "1 1 160px",
-                    padding: "8px 10px",
-                    borderRadius: 8,
-                    border: `1px solid ${C.border}`,
-                    fontFamily: GR,
-                    fontSize: 13,
-                  }}
-                />
-                {r.status === "open" && (
-                  <button
-                    disabled={!!busy}
-                    onClick={() => act(r._id, "ack")}
-                    style={{
-                      padding: "8px 14px",
-                      borderRadius: 8,
-                      border: `1px solid ${C.navy}`,
-                      background: C.white,
-                      color: C.navy,
-                      fontFamily: GR,
-                      fontWeight: 700,
-                      fontSize: 13,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Acknowledge
-                  </button>
-                )}
+                  style={field}
+                >
+                  <option value="">Assign to...</option>
+                  {staff
+                    .filter((s) => s.id !== user?.id)
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  disabled={!!busy || !assignTo[r._id]}
+                  onClick={() =>
+                    act(r._id, "assign", { userId: assignTo[r._id] })
+                  }
+                  style={btn(false)}
+                >
+                  Assign
+                </button>
+                <select
+                  value={outcomes[r._id] || "resolved"}
+                  onChange={(e) =>
+                    setOutcomes({ ...outcomes, [r._id]: e.target.value })
+                  }
+                  style={{ ...field, marginLeft: "auto" }}
+                >
+                  {Object.entries(OUTCOME_LABEL).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
                 <button
                   disabled={!!busy}
-                  onClick={() => act(r._id, "resolve")}
-                  style={{
-                    padding: "8px 14px",
-                    borderRadius: 8,
-                    border: "none",
-                    background: C.navy,
-                    color: "#fff",
-                    fontFamily: GR,
-                    fontWeight: 700,
-                    fontSize: 13,
-                    cursor: "pointer",
-                  }}
+                  onClick={() =>
+                    act(r._id, "resolve", {
+                      outcome: outcomes[r._id] || "resolved",
+                    })
+                  }
+                  style={btn(true)}
                 >
                   Resolve
+                </button>
+              </div>
+            )}
+            {resolved && canReopen && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  disabled={!!busy || (notes[r._id] || "").trim().length < 3}
+                  onClick={() => act(r._id, "reopen")}
+                  style={btn(false)}
+                >
+                  Reopen (write the reason above)
                 </button>
               </div>
             )}
