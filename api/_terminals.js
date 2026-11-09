@@ -35,3 +35,13 @@ export function terminalNear(point, meters) {
   }
   return best?.t || null;
 }
+
+// Id of the terminal closest to a point (where a ride's drop-off ends up).
+export function nearestTerminalId(point) {
+  let best = null;
+  for (const t of TERMINALS) {
+    const d = distanceMeters(point, t);
+    if (!best || d < best.d) best = { id: t.id, d };
+  }
+  return best.id;
+}

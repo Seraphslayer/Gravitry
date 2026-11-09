@@ -169,6 +169,15 @@ export const getQuote = (pickup, dropoff) =>
     }),
   });
 
+// Walk-up booking: staff book a ride for someone at the terminal who has no
+// app. quoteToken comes from getQuote (pickup = the terminal).
+// { origin, quoteToken, passengerName?, contact?, discountClaim? }
+export const createWalkup = (body) =>
+  req("requests?action=walkup", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
 export const getRequests = (params = {}) => {
   const qs = new URLSearchParams(params).toString();
   return req(`requests${qs ? `?${qs}` : ""}`);

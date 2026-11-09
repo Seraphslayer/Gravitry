@@ -56,6 +56,10 @@ Staff accounts are in `users` with a `level`: `marshal` < `admin` < `super_admin
 - Super admin only (staff accounts, database export): `requireSuperAdmin`.
 - Staff accounts API is `api/admin.js` `action=accounts|account-create|account-update|account-reset`.
 - The kiosk staff card + PIN (`x-staff-token`) is separate and stays marshal-level.
+- Walk-up booking: `POST /api/requests?action=walkup` (marshal/admin session or kiosk
+  staff token) books a kiosk-style ride (`source:"kiosk"`, `walkup:true`, priority 0)
+  for a passenger with no app. Same signed quote as the kiosk. `walkupContact` and
+  `bookedBy` are staff/driver-only (stripped in `publicView`). UI: Walk-up tab.
 
 ## Push notifications (free Web Push)
 `api/_push.js` (shared code) sends them; subscriptions are saved through
