@@ -38,12 +38,12 @@ const PIN_RE = /^[0-9]{4,8}$/;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MIN = 15;
 
-// Who is calling? A kiosk staff token (card + PIN) or a logged-in marshal /
+// Who is calling? A kiosk staff token (card + PIN) or a logged-in
 // admin (checked against the database, so a disabled account is refused).
 async function getActor(db, req, res) {
   const staff = getStaffFromReq(req);
   if (staff) return { by: `staff:${staff.name}`, name: staff.name };
-  const session = await requireStaff(db, req, res, ["admin", "marshal"]);
+  const session = await requireStaff(db, req, res, ["admin"]);
   if (!session) return null;
   return { by: session.sub || "admin", name: session.name || "Staff" };
 }
@@ -183,7 +183,7 @@ export default async function handler(req, res) {
 
     // ---- admin only --------------------------------------------------------
     if (req.method === "GET" && action === "attendance") {
-      if (!(await requireStaff(db, req, res, ["admin", "marshal"]))) return;
+      if (!(await requireStaff(db, req, res, ["admin"]))) return;
       const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "")
         ? req.query.date
         : phDate();

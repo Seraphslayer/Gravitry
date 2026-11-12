@@ -64,7 +64,7 @@ export function validSubscription(sub) {
 export const subscriptionId = (endpoint) =>
   createHash("sha256").update(endpoint).digest("hex").slice(0, 40);
 
-// who: { role: "driver" | "passenger" | "admin" | "marshal" (or a list of them),
+// who: { role: "driver" | "passenger" | "admin" (or a list of roles),
 // id?: string, ids?: string[] } (no id = everyone with that role). payload: { title, body, url?, tag?, urgent? }
 export async function notify(db, who, payload) {
   try {

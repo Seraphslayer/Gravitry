@@ -114,7 +114,7 @@ async function withinGlobalNfcRate(db) {
 function canSeePassengerDetails(req) {
   if (getStaffFromReq(req)) return true;
   const s = getSessionFromReq(req);
-  return s?.role === "admin" || s?.role === "marshal" || s?.role === "driver";
+  return s?.role === "admin" || s?.role === "driver";
 }
 
 // A ride without who booked it or where exactly they stand. Ride ids are
@@ -724,7 +724,7 @@ export default async function handler(req, res) {
     // a driver already on a trip is still refused. The ride is stamped with who
     // did it and why, so it shows in the audit trail.
     if (req.method === "POST" && id && action === "override") {
-      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const { driverId, reason } = req.body || {};
       if (!isNonEmptyString(driverId))
@@ -842,7 +842,6 @@ export default async function handler(req, res) {
         const session = await requireStaff(db, req, res, [
           "passenger",
           "admin",
-          "marshal",
         ]);
         if (!session) return;
         if (
@@ -933,17 +932,13 @@ export default async function handler(req, res) {
       // Only the driver who accepted this specific trip (or an admin) may
       // mark it complete - otherwise any caller could free up a tricycle
       // mid-trip or tamper with another driver's dispatch record.
-      const session = await requireStaff(db, req, res, [
-        "driver",
-        "admin",
-        "marshal",
-      ]);
+      const session = await requireStaff(db, req, res, ["driver", "admin"]);
       if (!session) return;
 
       // Only a ride in progress can be completed - otherwise a second tap (or a
       // cancelled / already recorded ride) would count the trip twice.
       const filter =
-        session.role === "admin" || session.role === "marshal"
+        session.role === "admin"
           ? { _id: id, status: "dispatched" }
           : { _id: id, driverId: session.driverId, status: "dispatched" };
       const result = await col.findOneAndUpdate(

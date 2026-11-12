@@ -2852,7 +2852,7 @@ function DataTab() {
   );
 }
 
-function OverrideTab({ waiting, drivers, loading, onChanged, canManageCards }) {
+function OverrideTab({ waiting, drivers, loading, onChanged }) {
   const [err, setErr] = useNotice("");
   const [pick, setPick] = useState({});
   const [reason, setReason] = useState({});
@@ -3043,7 +3043,7 @@ function OverrideTab({ waiting, drivers, loading, onChanged, canManageCards }) {
           </div>
         </div>
       ))}
-      {canManageCards && <StaffCards />}
+      <StaffCards />
     </div>
   );
 }
@@ -5319,13 +5319,9 @@ function VerifyTab({ items, loading, onChanged }) {
 
 // ---- Staff accounts (super admin only) ---------------------------------------
 const LEVEL_INFO = {
-  marshal: {
-    label: "Marshal",
-    help: "Runs the terminal: dispatch, line, walk-up bookings, incidents.",
-  },
   admin: {
     label: "Admin",
-    help: "Marshal + drivers, tricycles, tariff, verification, reports.",
+    help: "Runs the system: dispatch, drivers, tricycles, tariff, verification, incidents, reports.",
   },
   super_admin: {
     label: "Super admin",
@@ -5344,7 +5340,7 @@ function AccountsTab() {
   const [form, setForm] = useState({
     username: "",
     name: "",
-    level: "marshal",
+    level: "admin",
   });
 
   const load = useCallback(async () => {
@@ -5620,10 +5616,10 @@ function AccountsTab() {
   );
 }
 
-// What each tab needs. Marshals run the terminal; admins manage the system;
-// the super admin also manages staff accounts and data export. (The server
+// What each tab needs. Admins run the system; the super admin also manages
+// staff accounts and data export. (The server
 // enforces this too; hiding a tab is only for tidiness.)
-const LEVEL_RANK = { marshal: 1, admin: 2, super_admin: 3 };
+const LEVEL_RANK = { admin: 1, super_admin: 2 };
 const ADMIN_TABS = [
   ["drivers", "Drivers", "admin"],
   ["tricycles", "Tricycles", "admin"],
@@ -5631,10 +5627,10 @@ const ADMIN_TABS = [
   ["users", "Users", "admin"],
   ["verify", "Verify", "admin"],
   ["map", "Map", "admin"],
-  ["attendance", "Attendance", "marshal"],
-  ["override", "Override", "marshal"],
-  ["incidents", "Incidents", "marshal"],
-  ["log", "Log", "marshal"],
+  ["attendance", "Attendance", "admin"],
+  ["override", "Override", "admin"],
+  ["incidents", "Incidents", "admin"],
+  ["log", "Log", "admin"],
   ["reports", "Reports", "admin"],
   ["status", "Status", "admin"],
   ["data", "Data", "super_admin"],
@@ -5644,11 +5640,10 @@ const ADMIN_TABS = [
 export default function AdminView() {
   const { user, logout } = useAuth();
   const level = user?.level || "admin";
-  const isMarshal = level === "marshal";
   const myTabs = ADMIN_TABS.filter(
     ([, , min]) => LEVEL_RANK[level] >= LEVEL_RANK[min],
   );
-  const [tab, setTab] = useState(isMarshal ? "override" : "drivers");
+  const [tab, setTab] = useState("drivers");
   const [drivers, setDrivers] = useState([]);
   const [tricycles, setTricycles] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -5670,7 +5665,7 @@ export default function AdminView() {
     } catch {
       /* keep last known good state */
     }
-    if (!isMarshal) {
+    {
       try {
         setVerifs(await getVerifications());
       } catch {
@@ -5688,7 +5683,7 @@ export default function AdminView() {
       /* keep last known reports */
     }
     setLoading(false);
-  }, [isMarshal]);
+  }, []);
 
   useEffect(() => {
     loadAll();
@@ -5747,7 +5742,7 @@ export default function AdminView() {
               textTransform: "uppercase",
             }}
           >
-            {isMarshal ? "Marshal Console" : "Admin Dashboard"}
+            Admin Dashboard
           </div>
           <div
             style={{
@@ -5808,53 +5803,51 @@ export default function AdminView() {
           padding: "clamp(12px,3vw,20px)",
         }}
       >
-        {!isMarshal && (
-          <div
-            className="admin-stats-grid"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4,1fr)",
-              gap: 10,
-              marginBottom: 20,
-            }}
-          >
-            {stats.map((s) => (
+        <div
+          className="admin-stats-grid"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4,1fr)",
+            gap: 10,
+            marginBottom: 20,
+          }}
+        >
+          {stats.map((s) => (
+            <div
+              key={s.label}
+              style={{
+                background: C.white,
+                borderRadius: 12,
+                padding: "14px 16px",
+                border: `1px solid ${C.border}`,
+              }}
+            >
               <div
-                key={s.label}
                 style={{
-                  background: C.white,
-                  borderRadius: 12,
-                  padding: "14px 16px",
-                  border: `1px solid ${C.border}`,
+                  fontSize: "clamp(20px,5vw,26px)",
+                  fontWeight: 700,
+                  fontFamily: GR,
+                  color: C.navy,
                 }}
               >
-                <div
-                  style={{
-                    fontSize: "clamp(20px,5vw,26px)",
-                    fontWeight: 700,
-                    fontFamily: GR,
-                    color: C.navy,
-                  }}
-                >
-                  {s.value}
-                </div>
-                <div
-                  style={{
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    fontFamily: GR,
-                    color: C.text,
-                  }}
-                >
-                  {s.label}
-                </div>
-                <div style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
-                  {s.sub}
-                </div>
+                {s.value}
               </div>
-            ))}
-          </div>
-        )}
+              <div
+                style={{
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  fontFamily: GR,
+                  color: C.text,
+                }}
+              >
+                {s.label}
+              </div>
+              <div style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
+                {s.sub}
+              </div>
+            </div>
+          ))}
+        </div>
 
         <div
           style={{
@@ -5958,7 +5951,6 @@ export default function AdminView() {
         {tab === "attendance" && <AttendanceTab drivers={drivers} />}
         {tab === "override" && (
           <OverrideTab
-            canManageCards={!isMarshal}
             waiting={waiting}
             drivers={drivers}
             loading={loading}

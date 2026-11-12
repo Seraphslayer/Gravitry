@@ -14,7 +14,7 @@ export function comparePassword(plain, hash) {
   return bcrypt.compareSync(plain, hash);
 }
 
-// TODA staff (marshal / admin / super admin) stay signed in for one shift, not a
+// TODA staff (admin / super admin) stay signed in for one shift, not a
 // week, so a disabled or demoted account loses access quickly.
 export const STAFF_SESSION_SECONDS = 60 * 60 * 12;
 

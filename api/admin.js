@@ -27,7 +27,7 @@ import { phDate, driverAppActive } from "./_dispatch.js";
 //   POST /api/admin?action=account-create   { username, name, level }
 //   POST /api/admin?action=account-update&id=  { level?, active?, name? }
 //   POST /api/admin?action=account-reset&id=              new password (shown once)
-// level: marshal | admin | super_admin. Accounts are disabled, never deleted,
+// level: admin | super_admin. Accounts are disabled, never deleted,
 // so the log of who did what keeps making sense.
 //
 // A full backup = export every collection as JSON (the Data tab does this).
@@ -349,7 +349,7 @@ async function handleAccounts(db, req, res, action) {
       return true;
     }
     if (!STAFF_LEVELS.includes(body.level)) {
-      res.status(400).json({ error: "Choose marshal, admin or super admin" });
+      res.status(400).json({ error: "Choose admin or super admin" });
       return true;
     }
     if (await usernameTaken(db, username)) {
@@ -405,7 +405,7 @@ async function handleAccounts(db, req, res, action) {
     const set = {};
     if (body.level !== undefined) {
       if (!STAFF_LEVELS.includes(body.level)) {
-        res.status(400).json({ error: "Choose marshal, admin or super admin" });
+        res.status(400).json({ error: "Choose admin or super admin" });
         return true;
       }
       set.level = body.level;
