@@ -228,6 +228,20 @@ export const acceptViaNfc = (nfcId, origin) =>
     body: JSON.stringify({ nfcId, origin }),
   });
 
+// "I don't want to use the system" (kiosk). startOptOut gives a one-use ticket;
+// the driver the passenger boards with may then tap their card to put the trip
+// on record (optOutTap).
+export const startOptOut = (origin) =>
+  req("requests?action=optout", {
+    method: "POST",
+    body: JSON.stringify({ origin }),
+  });
+export const optOutTap = (nfcId, origin, optOutId) =>
+  req("requests?action=optout-tap", {
+    method: "POST",
+    body: JSON.stringify({ nfcId, origin, optOutId }),
+  });
+
 // -- Passenger verification (admin only) ----------------------------------------------------------------
 export const getVerifications = () => req("verifications");
 // Admin dashboard: user counts.

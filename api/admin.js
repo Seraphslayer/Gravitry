@@ -89,9 +89,13 @@ export async function buildAnalytics(db, from, to) {
   const toIso = new Date(`${to}T23:59:59.999+08:00`).toISOString();
   const range = { $gte: fromIso, $lte: toIso };
 
-  const rides = (
+  const allRides = (
     await db.collection("requests").find({ ts: range }).toArray()
   ).slice(0, MAX_ANALYTICS_ROWS);
+  // "I don't want to use the system" trips (no fare, no destination) are
+  // counted on their own so they don't skew income, averages or waits.
+  const rides = allRides.filter((r) => !r.optOut);
+  const noSystem = allRides.length - rides.length;
   const done = rides.filter((r) => r.status === "completed");
 
   // one bucket per Philippine day, even the quiet ones
@@ -167,6 +171,7 @@ export async function buildAnalytics(db, from, to) {
       stillWaiting: rides.filter((r) => r.status === "pending").length,
       income: money(income),
       averageFare: avg(done.map((r) => Number(r.fare) || 0)),
+      noSystem,
       kiosk: bySource.kiosk,
       app: bySource.app,
       discounted,

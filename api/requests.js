@@ -32,6 +32,10 @@ import {
 // false = any checked-in driver may take it.
 const LINE_STRICT = true;
 
+// How long the kiosk's "I don't want to use the system" option waits for the
+// driver to tap their card.
+const OPTOUT_MINUTES = 2;
+
 // Policy switch: may a passenger whose account is still pending staff
 // verification book rides? true = yes (temporary account works, flagged on the
 // request). false = they must wait until TODA staff approve them.
@@ -423,6 +427,147 @@ export default async function handler(req, res) {
         msg.newRide(doc, source === "kiosk"),
       );
       return res.status(201).json(doc);
+    }
+
+    // ---- "I don't want to use the system" (kiosk) ------------------------------
+    // Some passengers would rather just board a tricycle. The kiosk lets them
+    // say so, and the driver they board with MAY tap their NFC card to put the
+    // trip on record anyway, so there is a safety record of who left with
+    // someone and when. Two steps:
+    //   POST ?action=optout      { origin }                      kiosk button
+    //        -> { id, expiresAt }  a one-use ticket, valid OPTOUT_MINUTES
+    //   POST ?action=optout-tap  { nfcId, origin, optOutId }     driver's card
+    //        -> records a completed, fare-less trip (`optOut: true`)
+    // The ticket ties every record to a real button press at the kiosk. The
+    // driver need not be first in line (the passenger chose their tricycle);
+    // an expired license/franchise or a trip in progress still blocks, like any
+    // tap. These trips have no fare or destination and are not counted in
+    // income or trips-completed.
+    if (req.method === "POST" && !id && action === "optout") {
+      const term = req.body?.origin;
+      if (!isNonEmptyString(term) || !terminalById(term))
+        return res.status(400).json({ error: "Invalid terminal" });
+      if (!(await withinRate(db, `optout:${term}`, 12, 10 * 60 * 1000)))
+        return res
+          .status(429)
+          .json({ error: "Too many requests. Please wait a moment." });
+      const nowMs = Date.now();
+      const ticket = {
+        _id: `OO-${randomBytes(6).toString("hex")}`,
+        origin: term,
+        createdAt: new Date(nowMs).toISOString(),
+        expiresAt: new Date(nowMs + OPTOUT_MINUTES * 60000).toISOString(),
+        used: false,
+      };
+      await db.collection("optouts").insertOne(ticket);
+      return res
+        .status(201)
+        .json({ id: ticket._id, expiresAt: ticket.expiresAt });
+    }
+
+    if (req.method === "POST" && !id && action === "optout-tap") {
+      const { nfcId, origin: term, optOutId } = req.body || {};
+      if (
+        !isNonEmptyString(nfcId) ||
+        !/^[0-9]{6,20}$/.test(nfcId) ||
+        !isNonEmptyString(term) ||
+        !isNonEmptyString(optOutId)
+      )
+        return res.status(400).json({ error: "Invalid card or terminal" });
+      if (!(await withinGlobalNfcRate(db)))
+        return res.status(429).json({
+          error: "Too many NFC requests right now. Try again shortly.",
+        });
+      if (await isNfcIdLocked(db, nfcId))
+        return res
+          .status(429)
+          .json({ error: "This card is temporarily locked. Try again later." });
+
+      const tickets = db.collection("optouts");
+      const ticket = await tickets.findOne({ _id: optOutId });
+      if (
+        !ticket ||
+        ticket.origin !== term ||
+        ticket.used ||
+        new Date(ticket.expiresAt) < new Date()
+      )
+        return res.status(410).json({
+          error:
+            "This option timed out. The passenger can press the button again.",
+        });
+
+      const driver = await db.collection("drivers").findOne({ nfcId });
+      if (!driver) {
+        // Only drivers can record a trip (staff cards open the staff panel).
+        const isStaff = await db
+          .collection("staff_cards")
+          .findOne({ _id: nfcId, active: true });
+        if (!isStaff) await recordNfcIdFailure(db, nfcId);
+        return res.status(404).json({ error: "Driver card not recognized" });
+      }
+      if (driver.status === "on_trip")
+        return res
+          .status(409)
+          .json({ error: "You already have an active trip" });
+      const expired = expiredDocsOf(driver);
+      if (expired.length)
+        return res.status(403).json({
+          error: `Your ${expired.join(" and ")} has expired. Please renew it with TODA staff first.`,
+        });
+
+      // Use the ticket exactly once, even if two cards are tapped together.
+      const claimed = await tickets.findOneAndUpdate(
+        { _id: optOutId, used: false },
+        {
+          $set: {
+            used: true,
+            usedAt: new Date().toISOString(),
+            driverId: driver._id,
+          },
+        },
+        { returnDocument: "after" },
+      );
+      if (!(claimed?.value ?? claimed))
+        return res
+          .status(410)
+          .json({ error: "Another driver already recorded this trip." });
+
+      const nowIso = new Date().toISOString();
+      const doc = {
+        _id: await nextId(db, "requests", "DR"),
+        origin: term,
+        destination: null,
+        source: "kiosk",
+        optOut: true,
+        status: "completed",
+        fare: 0,
+        driver: driver.name,
+        driverId: driver._id,
+        unit: driver.unit,
+        plate: driver.plate || "N/A",
+        ts: ticket.createdAt,
+        acceptedAt: nowIso,
+        completedAt: nowIso,
+        recordedViaNfc: true,
+      };
+      await col.insertOne(doc);
+      // The driver is leaving the terminal: tapping counts as attendance, and
+      // they leave the line. Their tricycle is away until they tap back in.
+      await recordAttendance(db, driver, term, "nfc");
+      await leaveLine(db, driver._id);
+      await db
+        .collection("tricycles")
+        .updateOne(
+          { driverId: driver._id },
+          { $set: { status: "available", terminal: null } },
+        );
+      return res.status(200).json({
+        ok: true,
+        id: doc._id,
+        driver: driver.name,
+        unit: driver.unit || null,
+        plate: driver.plate || null,
+      });
     }
 
     // POST /api/requests?action=nfc-accept  - driver taps their NFC card at a

@@ -56,6 +56,16 @@ terminal is run by the kiosk, the drivers' NFC cards and the admins.
 - Staff accounts API is `api/admin.js` `action=accounts|account-create|account-update|account-reset`.
 - The kiosk staff card + PIN (`x-staff-token`) is separate (kiosk staff panel).
 
+## Kiosk "I don't want to use the system" (opt-out)
+Button on the kiosk home screen -> `POST api/requests.js ?action=optout` gives a
+2-minute single-use ticket (`optouts` collection). The driver the passenger
+boards with may tap their NFC card (`?action=optout-tap`) to put the trip on
+record for safety: a `requests` doc with `optOut:true`, `fare:0`,
+`destination:null`, already `completed`. It counts in the Log, but NOT in
+income / booked rides (`totals.noSystem` in `api/admin.js`) or the driver's
+`tripsCompleted`. Same driver rules as other taps (expired docs, on a trip,
+card lockout). The kiosk keeps the ticket in a ref (stale NFC listener).
+
 ## Push notifications (free Web Push)
 `api/_push.js` (shared code) sends them; subscriptions are saved through
 `api/auth.js` actions `push-key` / `push-subscribe` / `push-unsubscribe`

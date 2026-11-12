@@ -4318,8 +4318,23 @@ function LogTab({ logs, loading }) {
                     color: C.green,
                   }}
                 >
-                  {"\u20B1"}
-                  {log.fare}.00
+                  {log.optOut ? (
+                    <span
+                      style={{
+                        fontFamily: IN,
+                        fontWeight: 600,
+                        fontSize: 11,
+                        color: C.muted,
+                      }}
+                    >
+                      No-system trip
+                    </span>
+                  ) : (
+                    <>
+                      {"\u20B1"}
+                      {log.fare}.00
+                    </>
+                  )}
                   {log.discountApplied && (
                     <div
                       style={{

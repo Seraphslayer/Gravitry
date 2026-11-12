@@ -57,6 +57,8 @@ import {
   useNotice,
 } from "./shared.jsx";
 import {
+  startOptOut,
+  optOutTap,
   getQuote,
   createRequest,
   cancelRequest,
@@ -180,6 +182,14 @@ export default function KioskView() {
   const scanBufferRef = useRef("");
   const lastKeyTimeRef = useRef(0);
   const lastAcceptedRef = useRef({ id: null, time: 0 });
+
+  // "I don't want to use the system": a short-lived ticket lets the driver the
+  // passenger boards with tap their card to put the trip on record (safety).
+  // Kept in a ref too, because the NFC listener is registered once.
+  const [optOut, setOptOut] = useState(null); // { id, expiresAt }
+  const [optOutDone, setOptOutDone] = useState(null); // recorded trip details
+  const [optOutLeft, setOptOutLeft] = useState(0);
+  const optOutRef = useRef(null);
 
   // No GPS on the kiosk: it is fixed at its own terminal, so the pickup point
   // is always known and passengers only choose where they are going.
@@ -335,6 +345,22 @@ export default function KioskView() {
       return; // same card still sitting near the reader - ignore repeat reads
     }
     lastAcceptedRef.current = { id: nfcId, time: now };
+    if (optOutRef.current) {
+      try {
+        const done = await optOutTap(nfcId, KIOSK, optOutRef.current.id);
+        optOutRef.current = null;
+        setOptOut(null);
+        setOptOutDone(done);
+      } catch (err) {
+        setNfcNotice({
+          type: "error",
+          text:
+            err.message?.replace(/^API .* failed: /, "") ||
+            "Card not recognized",
+        });
+      }
+      return;
+    }
     try {
       const doc = await acceptViaNfc(nfcId, KIOSK);
       if (doc.staffCard) {
@@ -500,6 +526,51 @@ export default function KioskView() {
     }
     setSubmitting(false);
   };
+
+  const closeOptOut = () => {
+    optOutRef.current = null;
+    setOptOut(null);
+    setOptOutDone(null);
+    setStep("home");
+  };
+
+  const openOptOut = async () => {
+    try {
+      const t = await startOptOut(KIOSK);
+      optOutRef.current = t;
+      setOptOut(t);
+      setOptOutDone(null);
+      setStep("optout");
+    } catch (err) {
+      setError(
+        err.message?.replace(/^API .* failed: /, "") || "Please try again.",
+      );
+    }
+  };
+
+  // Countdown while the ticket is open; go home when it runs out.
+  useEffect(() => {
+    if (!optOut) return undefined;
+    const tick = () => {
+      const left = Math.max(
+        0,
+        Math.round((new Date(optOut.expiresAt) - Date.now()) / 1000),
+      );
+      setOptOutLeft(left);
+      if (left <= 0) closeOptOut();
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optOut]);
+
+  // After a recorded trip, show the thank-you for a few seconds, then go home.
+  useEffect(() => {
+    if (!optOutDone) return undefined;
+    const id = setTimeout(closeOptOut, 6000);
+    return () => clearTimeout(id);
+  }, [optOutDone]);
 
   const reset = () => {
     setStep("home");
@@ -923,6 +994,28 @@ export default function KioskView() {
               </span>
               <ChevronRight size={20} />
             </button>
+            <button
+              onClick={openOptOut}
+              style={{
+                width: "100%",
+                marginTop: 10,
+                padding: "12px 16px",
+                borderRadius: 14,
+                border: `1px solid ${C.border || C.muted}`,
+                background: "transparent",
+                color: C.muted,
+                fontFamily: IN,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              I don't want to use the system
+              <div style={{ fontSize: 11, fontWeight: 400, marginTop: 2 }}>
+                Ayaw gumamit ng sistema? Pwedeng i-record ng driver ang biyahe
+                para sa inyong kaligtasan.
+              </div>
+            </button>
             <div
               style={{
                 display: "flex",
@@ -969,6 +1062,91 @@ export default function KioskView() {
                 PWD discount
               </div>
             </div>
+          </div>
+        )}
+
+        {step === "optout" && (
+          <div style={{ textAlign: "center", padding: "12px 4px" }}>
+            {optOutDone ? (
+              <>
+                <CheckCircle size={56} color={C.green} />
+                <h2
+                  style={{
+                    fontFamily: GR,
+                    color: C.text,
+                    margin: "12px 0 4px",
+                  }}
+                >
+                  Trip recorded
+                </h2>
+                <p
+                  style={{
+                    fontFamily: IN,
+                    color: C.text,
+                    fontSize: 15,
+                    margin: 0,
+                  }}
+                >
+                  {optOutDone.driver} · {optOutDone.unit} {optOutDone.plate}
+                </p>
+                <p style={{ fontFamily: IN, color: C.muted, fontSize: 13 }}>
+                  Ingat sa biyahe!
+                </p>
+              </>
+            ) : (
+              <>
+                <Shield size={48} color={C.green} />
+                <h2
+                  style={{
+                    fontFamily: GR,
+                    color: C.text,
+                    margin: "12px 0 4px",
+                  }}
+                >
+                  Okay lang, hindi kailangang gumamit ng sistema
+                </h2>
+                <p
+                  style={{
+                    fontFamily: IN,
+                    color: C.muted,
+                    fontSize: 13.5,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Driver: <b>i-tap ang NFC card mo</b> kung gusto mong ma-record
+                  ang biyaheng ito (optional). Para sa kaligtasan ng pasahero at
+                  ng driver. Walang fare o destinasyon na itatala.
+                </p>
+                <p
+                  style={{
+                    fontFamily: GR,
+                    color: C.text,
+                    fontSize: 28,
+                    margin: "8px 0",
+                  }}
+                >
+                  {Math.floor(optOutLeft / 60)}:
+                  {String(optOutLeft % 60).padStart(2, "0")}
+                </p>
+              </>
+            )}
+            <button
+              onClick={closeOptOut}
+              style={{
+                marginTop: 12,
+                padding: "14px 28px",
+                borderRadius: 14,
+                border: "none",
+                background: C.yellow,
+                color: C.navy,
+                fontFamily: GR,
+                fontWeight: 700,
+                fontSize: 15,
+                cursor: "pointer",
+              }}
+            >
+              {optOutDone ? "Done" : "Cancel / Back"}
+            </button>
           </div>
         )}
 
