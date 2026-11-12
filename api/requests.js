@@ -25,7 +25,6 @@ import {
   terminalById,
   distanceMeters,
   AT_TERMINAL_METERS,
-  nearestTerminalId,
 } from "./_terminals.js";
 
 // true  = only the driver at the front of the terminal line may take the next
@@ -128,8 +127,6 @@ function publicView(doc) {
     passengerStatus: _c,
     discountConfirmedBy: _d,
     manualOverride: _e,
-    walkupContact: _f,
-    bookedBy: _g,
     ...rest
   } = doc;
   if (rest.pickup) rest.pickup = { label: rest.pickup.label ?? null };
@@ -245,105 +242,6 @@ export default async function handler(req, res) {
       // two quick taps: whichever wrote first wins, both get the same link
       const fresh = await col.findOne({ _id: id });
       return res.status(200).json({ token: fresh.shareToken });
-    }
-
-    // POST /api/requests?action=walkup   (marshal / admin / kiosk staff panel)
-    //   { origin, quoteToken, passengerName?, contact?, discountClaim? }
-    // WALK-UP BOOKING: staff book a ride for someone standing at the terminal
-    // who has no app and can't use the kiosk (an elderly passenger, no phone...).
-    // It is an ordinary kiosk-style ride (served first, driver taps NFC, a
-    // claimed discount is confirmed by the driver or by staff who saw the ID),
-    // plus who booked it. The route and fare still come from a signed quote.
-    if (req.method === "POST" && !id && action === "walkup") {
-      let by = null;
-      const kioskStaff = getStaffFromReq(req);
-      if (kioskStaff)
-        by = { id: `staff:${kioskStaff.staffId}`, name: kioskStaff.name };
-      else {
-        const session = await requireStaff(db, req, res, ["admin", "marshal"]);
-        if (!session) return;
-        by = { id: session.sub, name: session.name || "Staff" };
-      }
-      const {
-        origin: o,
-        quoteToken,
-        passengerName,
-        contact,
-        discountClaim,
-      } = req.body || {};
-      if (!isNonEmptyString(o) || !terminalById(o))
-        return res.status(400).json({ error: "Choose the terminal" });
-      const quote = verifyQuote(quoteToken);
-      if (!quote)
-        return res.status(400).json({
-          error: "The fare quote expired. Please get the fare again.",
-        });
-      let claim = null;
-      if (discountClaim != null && discountClaim !== "") {
-        if (
-          typeof discountClaim !== "string" ||
-          !DISCOUNT_TYPES.includes(discountClaim)
-        )
-          return res.status(400).json({ error: "Invalid discount type" });
-        claim = discountClaim;
-      }
-      const name =
-        typeof passengerName === "string"
-          ? passengerName.trim().slice(0, 60)
-          : "";
-      const phone = typeof contact === "string" ? contact.trim() : "";
-      if (phone && !/^[0-9+\-\s()]{7,20}$/.test(phone))
-        return res
-          .status(400)
-          .json({ error: "That phone number doesn't look right" });
-
-      const waiting = await col.countDocuments({
-        status: "pending",
-        source: "kiosk",
-        origin: o,
-      });
-      if (waiting >= KIOSK_MAX_WAITING)
-        return res.status(409).json({
-          error: `${KIOSK_MAX_WAITING} rides are already waiting at this terminal.`,
-        });
-
-      const pricing = buildPricing(quote.regularFare, {
-        passenger: null,
-        source: "kiosk",
-        claim,
-        tariff: await getTariff(db),
-      });
-      const doc = {
-        _id: await nextId(db, "requests", "DR"),
-        origin: o,
-        destination: nearestTerminalId(quote.dropoff),
-        pickup: quote.pickup,
-        dropoff: quote.dropoff,
-        distanceMeters: quote.meters,
-        distanceEstimated: !!quote.estimated,
-        ...pricing,
-        status: "pending",
-        source: "kiosk",
-        walkup: true,
-        bookedBy: by.id,
-        bookedByName: by.name,
-        atTerminal: true,
-        priority: ridePriority({ source: "kiosk", atTerminal: true }),
-        ts: new Date().toISOString(),
-        ...(name ? { passengerName: name } : {}),
-        ...(phone ? { walkupContact: phone } : {}),
-      };
-      await col.insertOne(doc);
-      const inLine = await db
-        .collection("terminal_line")
-        .find({ terminal: o })
-        .toArray();
-      await notify(
-        db,
-        { role: "driver", ids: inLine.map((l) => l._id) },
-        msg.newRide(doc, true),
-      );
-      return res.status(201).json(doc);
     }
 
     // POST /api/requests  - kiosk or passenger app creates a pending ride request
