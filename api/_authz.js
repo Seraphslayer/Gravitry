@@ -2,20 +2,15 @@ import { getSessionFromReq } from "./_auth.js";
 
 // ---- Staff levels ------------------------------------------------------------
 // TODA staff accounts live in the "users" collection and have a level:
-//   marshal      runs the terminal: dispatch, line, walk-up booking, incidents
-//   admin        everything a marshal does, plus drivers, tricycles, tariff,
-//                verification, reports
+//   admin        runs the system: dispatch, drivers, tricycles, tariff,
+//                verification, incidents, reports
 //   super_admin  everything, plus staff accounts and database export/backup
 // A user document with NO level is an older account (made before levels
 // existed); it keeps full power, i.e. super_admin.
 //
-// A login session carries role "admin" (admin + super admin) or "marshal".
-// Endpoints that only list "admin" therefore refuse marshals by default; a
-// marshal only gets in where an endpoint names "marshal" on purpose.
-export const STAFF_LEVELS = ["marshal", "admin", "super_admin"];
+// A login session carries role "admin" for both levels; `level` tells them apart.
+export const STAFF_LEVELS = ["admin", "super_admin"];
 export const levelOf = (user) => (user && user.level) || "super_admin";
-export const roleForLevel = (level) =>
-  level === "marshal" ? "marshal" : "admin";
 const rank = (level) => STAFF_LEVELS.indexOf(level);
 
 // Checks the request has a valid session, and (if allowedRoles is given) that
@@ -50,20 +45,14 @@ export function isNonEmptyString(v) {
 export async function requireStaff(db, req, res, allowedRoles = ["admin"]) {
   const session = requireSession(req, res, allowedRoles);
   if (!session) return null;
-  if (session.role !== "admin" && session.role !== "marshal") return session;
+  if (session.role !== "admin") return session;
   if (!session.level) return session;
   const user = await db.collection("users").findOne({ _id: session.sub });
   if (!user || user.active === false) {
     res.status(401).json({ error: "This account is not active" });
     return null;
   }
-  const level = levelOf(user);
-  const role = roleForLevel(level);
-  if (!allowedRoles.includes(role)) {
-    res.status(403).json({ error: "Not authorized for this action" });
-    return null;
-  }
-  return { ...session, role, level };
+  return { ...session, level: levelOf(user) };
 }
 
 // Super admin only (staff accounts, database export). Always checked against
