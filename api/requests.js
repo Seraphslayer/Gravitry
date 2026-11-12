@@ -25,13 +25,16 @@ import {
   terminalById,
   distanceMeters,
   AT_TERMINAL_METERS,
-  nearestTerminalId,
 } from "./_terminals.js";
 
 // true  = only the driver at the front of the terminal line may take the next
 //         ride at that terminal (others see their place in line).
 // false = any checked-in driver may take it.
 const LINE_STRICT = true;
+
+// How long the kiosk's "I don't want to use the system" option waits for the
+// driver to tap their card.
+const OPTOUT_MINUTES = 2;
 
 // Policy switch: may a passenger whose account is still pending staff
 // verification book rides? true = yes (temporary account works, flagged on the
@@ -115,7 +118,7 @@ async function withinGlobalNfcRate(db) {
 function canSeePassengerDetails(req) {
   if (getStaffFromReq(req)) return true;
   const s = getSessionFromReq(req);
-  return s?.role === "admin" || s?.role === "marshal" || s?.role === "driver";
+  return s?.role === "admin" || s?.role === "driver";
 }
 
 // A ride without who booked it or where exactly they stand. Ride ids are
@@ -128,8 +131,6 @@ function publicView(doc) {
     passengerStatus: _c,
     discountConfirmedBy: _d,
     manualOverride: _e,
-    walkupContact: _f,
-    bookedBy: _g,
     ...rest
   } = doc;
   if (rest.pickup) rest.pickup = { label: rest.pickup.label ?? null };
@@ -245,105 +246,6 @@ export default async function handler(req, res) {
       // two quick taps: whichever wrote first wins, both get the same link
       const fresh = await col.findOne({ _id: id });
       return res.status(200).json({ token: fresh.shareToken });
-    }
-
-    // POST /api/requests?action=walkup   (marshal / admin / kiosk staff panel)
-    //   { origin, quoteToken, passengerName?, contact?, discountClaim? }
-    // WALK-UP BOOKING: staff book a ride for someone standing at the terminal
-    // who has no app and can't use the kiosk (an elderly passenger, no phone...).
-    // It is an ordinary kiosk-style ride (served first, driver taps NFC, a
-    // claimed discount is confirmed by the driver or by staff who saw the ID),
-    // plus who booked it. The route and fare still come from a signed quote.
-    if (req.method === "POST" && !id && action === "walkup") {
-      let by = null;
-      const kioskStaff = getStaffFromReq(req);
-      if (kioskStaff)
-        by = { id: `staff:${kioskStaff.staffId}`, name: kioskStaff.name };
-      else {
-        const session = await requireStaff(db, req, res, ["admin", "marshal"]);
-        if (!session) return;
-        by = { id: session.sub, name: session.name || "Staff" };
-      }
-      const {
-        origin: o,
-        quoteToken,
-        passengerName,
-        contact,
-        discountClaim,
-      } = req.body || {};
-      if (!isNonEmptyString(o) || !terminalById(o))
-        return res.status(400).json({ error: "Choose the terminal" });
-      const quote = verifyQuote(quoteToken);
-      if (!quote)
-        return res.status(400).json({
-          error: "The fare quote expired. Please get the fare again.",
-        });
-      let claim = null;
-      if (discountClaim != null && discountClaim !== "") {
-        if (
-          typeof discountClaim !== "string" ||
-          !DISCOUNT_TYPES.includes(discountClaim)
-        )
-          return res.status(400).json({ error: "Invalid discount type" });
-        claim = discountClaim;
-      }
-      const name =
-        typeof passengerName === "string"
-          ? passengerName.trim().slice(0, 60)
-          : "";
-      const phone = typeof contact === "string" ? contact.trim() : "";
-      if (phone && !/^[0-9+\-\s()]{7,20}$/.test(phone))
-        return res
-          .status(400)
-          .json({ error: "That phone number doesn't look right" });
-
-      const waiting = await col.countDocuments({
-        status: "pending",
-        source: "kiosk",
-        origin: o,
-      });
-      if (waiting >= KIOSK_MAX_WAITING)
-        return res.status(409).json({
-          error: `${KIOSK_MAX_WAITING} rides are already waiting at this terminal.`,
-        });
-
-      const pricing = buildPricing(quote.regularFare, {
-        passenger: null,
-        source: "kiosk",
-        claim,
-        tariff: await getTariff(db),
-      });
-      const doc = {
-        _id: await nextId(db, "requests", "DR"),
-        origin: o,
-        destination: nearestTerminalId(quote.dropoff),
-        pickup: quote.pickup,
-        dropoff: quote.dropoff,
-        distanceMeters: quote.meters,
-        distanceEstimated: !!quote.estimated,
-        ...pricing,
-        status: "pending",
-        source: "kiosk",
-        walkup: true,
-        bookedBy: by.id,
-        bookedByName: by.name,
-        atTerminal: true,
-        priority: ridePriority({ source: "kiosk", atTerminal: true }),
-        ts: new Date().toISOString(),
-        ...(name ? { passengerName: name } : {}),
-        ...(phone ? { walkupContact: phone } : {}),
-      };
-      await col.insertOne(doc);
-      const inLine = await db
-        .collection("terminal_line")
-        .find({ terminal: o })
-        .toArray();
-      await notify(
-        db,
-        { role: "driver", ids: inLine.map((l) => l._id) },
-        msg.newRide(doc, true),
-      );
-      return res.status(201).json(doc);
     }
 
     // POST /api/requests  - kiosk or passenger app creates a pending ride request
@@ -525,6 +427,147 @@ export default async function handler(req, res) {
         msg.newRide(doc, source === "kiosk"),
       );
       return res.status(201).json(doc);
+    }
+
+    // ---- "I don't want to use the system" (kiosk) ------------------------------
+    // Some passengers would rather just board a tricycle. The kiosk lets them
+    // say so, and the driver they board with MAY tap their NFC card to put the
+    // trip on record anyway, so there is a safety record of who left with
+    // someone and when. Two steps:
+    //   POST ?action=optout      { origin }                      kiosk button
+    //        -> { id, expiresAt }  a one-use ticket, valid OPTOUT_MINUTES
+    //   POST ?action=optout-tap  { nfcId, origin, optOutId }     driver's card
+    //        -> records a completed, fare-less trip (`optOut: true`)
+    // The ticket ties every record to a real button press at the kiosk. The
+    // driver need not be first in line (the passenger chose their tricycle);
+    // an expired license/franchise or a trip in progress still blocks, like any
+    // tap. These trips have no fare or destination and are not counted in
+    // income or trips-completed.
+    if (req.method === "POST" && !id && action === "optout") {
+      const term = req.body?.origin;
+      if (!isNonEmptyString(term) || !terminalById(term))
+        return res.status(400).json({ error: "Invalid terminal" });
+      if (!(await withinRate(db, `optout:${term}`, 12, 10 * 60 * 1000)))
+        return res
+          .status(429)
+          .json({ error: "Too many requests. Please wait a moment." });
+      const nowMs = Date.now();
+      const ticket = {
+        _id: `OO-${randomBytes(6).toString("hex")}`,
+        origin: term,
+        createdAt: new Date(nowMs).toISOString(),
+        expiresAt: new Date(nowMs + OPTOUT_MINUTES * 60000).toISOString(),
+        used: false,
+      };
+      await db.collection("optouts").insertOne(ticket);
+      return res
+        .status(201)
+        .json({ id: ticket._id, expiresAt: ticket.expiresAt });
+    }
+
+    if (req.method === "POST" && !id && action === "optout-tap") {
+      const { nfcId, origin: term, optOutId } = req.body || {};
+      if (
+        !isNonEmptyString(nfcId) ||
+        !/^[0-9]{6,20}$/.test(nfcId) ||
+        !isNonEmptyString(term) ||
+        !isNonEmptyString(optOutId)
+      )
+        return res.status(400).json({ error: "Invalid card or terminal" });
+      if (!(await withinGlobalNfcRate(db)))
+        return res.status(429).json({
+          error: "Too many NFC requests right now. Try again shortly.",
+        });
+      if (await isNfcIdLocked(db, nfcId))
+        return res
+          .status(429)
+          .json({ error: "This card is temporarily locked. Try again later." });
+
+      const tickets = db.collection("optouts");
+      const ticket = await tickets.findOne({ _id: optOutId });
+      if (
+        !ticket ||
+        ticket.origin !== term ||
+        ticket.used ||
+        new Date(ticket.expiresAt) < new Date()
+      )
+        return res.status(410).json({
+          error:
+            "This option timed out. The passenger can press the button again.",
+        });
+
+      const driver = await db.collection("drivers").findOne({ nfcId });
+      if (!driver) {
+        // Only drivers can record a trip (staff cards open the staff panel).
+        const isStaff = await db
+          .collection("staff_cards")
+          .findOne({ _id: nfcId, active: true });
+        if (!isStaff) await recordNfcIdFailure(db, nfcId);
+        return res.status(404).json({ error: "Driver card not recognized" });
+      }
+      if (driver.status === "on_trip")
+        return res
+          .status(409)
+          .json({ error: "You already have an active trip" });
+      const expired = expiredDocsOf(driver);
+      if (expired.length)
+        return res.status(403).json({
+          error: `Your ${expired.join(" and ")} has expired. Please renew it with TODA staff first.`,
+        });
+
+      // Use the ticket exactly once, even if two cards are tapped together.
+      const claimed = await tickets.findOneAndUpdate(
+        { _id: optOutId, used: false },
+        {
+          $set: {
+            used: true,
+            usedAt: new Date().toISOString(),
+            driverId: driver._id,
+          },
+        },
+        { returnDocument: "after" },
+      );
+      if (!(claimed?.value ?? claimed))
+        return res
+          .status(410)
+          .json({ error: "Another driver already recorded this trip." });
+
+      const nowIso = new Date().toISOString();
+      const doc = {
+        _id: await nextId(db, "requests", "DR"),
+        origin: term,
+        destination: null,
+        source: "kiosk",
+        optOut: true,
+        status: "completed",
+        fare: 0,
+        driver: driver.name,
+        driverId: driver._id,
+        unit: driver.unit,
+        plate: driver.plate || "N/A",
+        ts: ticket.createdAt,
+        acceptedAt: nowIso,
+        completedAt: nowIso,
+        recordedViaNfc: true,
+      };
+      await col.insertOne(doc);
+      // The driver is leaving the terminal: tapping counts as attendance, and
+      // they leave the line. Their tricycle is away until they tap back in.
+      await recordAttendance(db, driver, term, "nfc");
+      await leaveLine(db, driver._id);
+      await db
+        .collection("tricycles")
+        .updateOne(
+          { driverId: driver._id },
+          { $set: { status: "available", terminal: null } },
+        );
+      return res.status(200).json({
+        ok: true,
+        id: doc._id,
+        driver: driver.name,
+        unit: driver.unit || null,
+        plate: driver.plate || null,
+      });
     }
 
     // POST /api/requests?action=nfc-accept  - driver taps their NFC card at a
@@ -826,7 +869,7 @@ export default async function handler(req, res) {
     // a driver already on a trip is still refused. The ride is stamped with who
     // did it and why, so it shows in the audit trail.
     if (req.method === "POST" && id && action === "override") {
-      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const { driverId, reason } = req.body || {};
       if (!isNonEmptyString(driverId))
@@ -944,7 +987,6 @@ export default async function handler(req, res) {
         const session = await requireStaff(db, req, res, [
           "passenger",
           "admin",
-          "marshal",
         ]);
         if (!session) return;
         if (
@@ -1035,17 +1077,13 @@ export default async function handler(req, res) {
       // Only the driver who accepted this specific trip (or an admin) may
       // mark it complete - otherwise any caller could free up a tricycle
       // mid-trip or tamper with another driver's dispatch record.
-      const session = await requireStaff(db, req, res, [
-        "driver",
-        "admin",
-        "marshal",
-      ]);
+      const session = await requireStaff(db, req, res, ["driver", "admin"]);
       if (!session) return;
 
       // Only a ride in progress can be completed - otherwise a second tap (or a
       // cancelled / already recorded ride) would count the trip twice.
       const filter =
-        session.role === "admin" || session.role === "marshal"
+        session.role === "admin"
           ? { _id: id, status: "dispatched" }
           : { _id: id, driverId: session.driverId, status: "dispatched" };
       const result = await col.findOneAndUpdate(

@@ -13,7 +13,6 @@ import {
   requireSession,
   requireStaff,
   levelOf,
-  roleForLevel,
 } from "./_authz.js";
 import { isValidPhoto, withinRate } from "./_images.js";
 import {
@@ -408,10 +407,9 @@ export default async function handler(req, res) {
         }
         await clearLoginFailures(db, key);
         const level = levelOf(admin);
-        const role = roleForLevel(level);
         const name = admin.name || admin.username;
         const token = signSession(
-          { sub: admin._id, role, level, name },
+          { sub: admin._id, role: "admin", level, name },
           STAFF_SESSION_SECONDS,
         );
         setSessionCookie(res, token, STAFF_SESSION_SECONDS);
@@ -421,7 +419,9 @@ export default async function handler(req, res) {
             { _id: admin._id },
             { $set: { lastLoginAt: new Date().toISOString() } },
           );
-        return res.status(200).json({ role, level, id: admin._id, name });
+        return res
+          .status(200)
+          .json({ role: "admin", level, id: admin._id, name });
       }
 
       const driver = await db
@@ -492,7 +492,6 @@ export default async function handler(req, res) {
         "passenger",
         "driver",
         "admin",
-        "marshal",
       ]);
       if (!session) return;
       if (!pushEnabled())
@@ -532,7 +531,6 @@ export default async function handler(req, res) {
         "passenger",
         "driver",
         "admin",
-        "marshal",
       ]);
       if (!session) return;
       const endpoint = req.body?.endpoint;
@@ -553,14 +551,14 @@ export default async function handler(req, res) {
       if (!session) return res.status(401).json({ error: "Not logged in" });
       let passengerInfo = {};
       let staffInfo = {};
-      if (session.role === "admin" || session.role === "marshal") {
+      if (session.role === "admin") {
         const u = await db.collection("users").findOne({ _id: session.sub });
         if (!u || u.active === false) {
           clearSessionCookie(res);
           return res.status(401).json({ error: "Account not found" });
         }
         const level = levelOf(u);
-        staffInfo = { level, role: roleForLevel(level) };
+        staffInfo = { level };
       }
       if (session.role === "passenger") {
         const p = await db.collection("passengers").findOne(

@@ -8,8 +8,8 @@ import { notify, msg } from "./_push.js";
 //   POST /api/reports?action=create   passenger or driver
 //        { kind: "sos" | "incident", category?, description?, requestId?, lat?, lng? }
 //   GET  /api/reports                 admin: all reports, newest first
-//   GET  /api/reports?action=staff    marshal/admin: active staff, for "assign to"
-//   POST /api/reports?id=IR-001&action=...   marshal/admin
+//   GET  /api/reports?action=staff    admin: active staff, for "assign to"
+//   POST /api/reports?id=IR-001&action=...   admin
 //        ack                       { note? }  "we got it"
 //        assign                    { userId? } take it yourself, or give it to a staff member
 //        note                      { note }   a progress update in the timeline
@@ -246,7 +246,7 @@ export default async function handler(req, res) {
       };
       await col.insertOne(doc);
       // TODA staff get it on their phones even if the admin page is closed.
-      await notify(db, { role: ["admin", "marshal"] }, msg.sos(doc));
+      await notify(db, { role: "admin" }, msg.sos(doc));
       return res.status(201).json({ id: doc._id, kind, ts: doc.ts });
     }
 
@@ -280,7 +280,7 @@ export default async function handler(req, res) {
     // Small on purpose: just what the SOS banner needs, so the admin page can
     // ask for it often without loading the whole report history.
     if (req.method === "GET" && action === "alerts") {
-      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const docs = await col
         .find({ status: { $in: ["open", "acknowledged"] } })
@@ -310,7 +310,7 @@ export default async function handler(req, res) {
 
     // ---- staff list for "assign to" -------------------------------------------
     if (req.method === "GET" && action === "staff") {
-      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const users = await db.collection("users").find({}).toArray();
       return res.status(200).json(
@@ -323,7 +323,7 @@ export default async function handler(req, res) {
 
     // ---- admin: list ---------------------------------------------------------
     if (req.method === "GET" && !id) {
-      const session = await requireStaff(db, req, res, ["admin", "marshal"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const docs = await col.find({}).sort({ ts: -1 }).toArray();
       return res.status(200).json(docs.map(present));
@@ -335,12 +335,7 @@ export default async function handler(req, res) {
       id &&
       ["ack", "assign", "note", "resolve", "reopen"].includes(action)
     ) {
-      const session = await requireStaff(
-        db,
-        req,
-        res,
-        action === "reopen" ? ["admin"] : ["admin", "marshal"],
-      );
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const note =
         typeof req.body?.note === "string"

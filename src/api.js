@@ -169,15 +169,6 @@ export const getQuote = (pickup, dropoff) =>
     }),
   });
 
-// Walk-up booking: staff book a ride for someone at the terminal who has no
-// app. quoteToken comes from getQuote (pickup = the terminal).
-// { origin, quoteToken, passengerName?, contact?, discountClaim? }
-export const createWalkup = (body) =>
-  req("requests?action=walkup", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-
 export const getRequests = (params = {}) => {
   const qs = new URLSearchParams(params).toString();
   return req(`requests${qs ? `?${qs}` : ""}`);
@@ -235,6 +226,20 @@ export const acceptViaNfc = (nfcId, origin) =>
   req("requests?action=nfc-accept", {
     method: "POST",
     body: JSON.stringify({ nfcId, origin }),
+  });
+
+// "I don't want to use the system" (kiosk). startOptOut gives a one-use ticket;
+// the driver the passenger boards with may then tap their card to put the trip
+// on record (optOutTap).
+export const startOptOut = (origin) =>
+  req("requests?action=optout", {
+    method: "POST",
+    body: JSON.stringify({ origin }),
+  });
+export const optOutTap = (nfcId, origin, optOutId) =>
+  req("requests?action=optout-tap", {
+    method: "POST",
+    body: JSON.stringify({ nfcId, origin, optOutId }),
   });
 
 // -- Passenger verification (admin only) ----------------------------------------------------------------

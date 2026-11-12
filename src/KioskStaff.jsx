@@ -350,12 +350,8 @@ export default function KioskStaff({ card, terminal, onClose }) {
                       margin: "2px 0 8px",
                     }}
                   >
-                    {r.walkup
-                      ? "Walk-up"
-                      : r.source === "kiosk"
-                        ? "Kiosk"
-                        : "App"}{" "}
-                    · to {r.destination}
+                    {r.source === "kiosk" ? "Kiosk" : "App"} · to{" "}
+                    {r.destination}
                   </div>
                   {pickFor === r._id ? (
                     <div

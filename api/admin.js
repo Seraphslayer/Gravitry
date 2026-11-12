@@ -27,7 +27,7 @@ import { phDate, driverAppActive } from "./_dispatch.js";
 //   POST /api/admin?action=account-create   { username, name, level }
 //   POST /api/admin?action=account-update&id=  { level?, active?, name? }
 //   POST /api/admin?action=account-reset&id=              new password (shown once)
-// level: marshal | admin | super_admin. Accounts are disabled, never deleted,
+// level: admin | super_admin. Accounts are disabled, never deleted,
 // so the log of who did what keeps making sense.
 //
 // A full backup = export every collection as JSON (the Data tab does this).
@@ -89,9 +89,13 @@ export async function buildAnalytics(db, from, to) {
   const toIso = new Date(`${to}T23:59:59.999+08:00`).toISOString();
   const range = { $gte: fromIso, $lte: toIso };
 
-  const rides = (
+  const allRides = (
     await db.collection("requests").find({ ts: range }).toArray()
   ).slice(0, MAX_ANALYTICS_ROWS);
+  // "I don't want to use the system" trips (no fare, no destination) are
+  // counted on their own so they don't skew income, averages or waits.
+  const rides = allRides.filter((r) => !r.optOut);
+  const noSystem = allRides.length - rides.length;
   const done = rides.filter((r) => r.status === "completed");
 
   // one bucket per Philippine day, even the quiet ones
@@ -175,6 +179,7 @@ export async function buildAnalytics(db, from, to) {
       stillWaiting: rides.filter((r) => r.status === "pending").length,
       income: money(income),
       averageFare: avg(done.map((r) => Number(r.fare) || 0)),
+      noSystem,
       kiosk: bySource.kiosk,
       app: bySource.app,
       discounted,
@@ -359,7 +364,7 @@ async function handleAccounts(db, req, res, action) {
       return true;
     }
     if (!STAFF_LEVELS.includes(body.level)) {
-      res.status(400).json({ error: "Choose marshal, admin or super admin" });
+      res.status(400).json({ error: "Choose admin or super admin" });
       return true;
     }
     if (await usernameTaken(db, username)) {
@@ -415,7 +420,7 @@ async function handleAccounts(db, req, res, action) {
     const set = {};
     if (body.level !== undefined) {
       if (!STAFF_LEVELS.includes(body.level)) {
-        res.status(400).json({ error: "Choose marshal, admin or super admin" });
+        res.status(400).json({ error: "Choose admin or super admin" });
         return true;
       }
       set.level = body.level;

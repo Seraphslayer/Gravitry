@@ -22,9 +22,9 @@ function seed() {
     });
   user("S1", "Boss", "super_admin");
   user("A1", "Ana", "admin");
-  user("M1", "Mario", "marshal");
-  user("M2", "Maria", "marshal");
-  user("M3", "Gone", "marshal", { active: false });
+  user("A2", "Mario", "admin");
+  user("A3", "Gone", "admin", { active: false });
+  user("A4", "Maria", "admin");
   T("passengers").push({ _id: "P1", name: "Lola", status: "verified" });
   T("push_subscriptions").push({
     _id: "ps1",
@@ -38,8 +38,8 @@ function seed() {
   });
   return T;
 }
-const asMarshal = () =>
-  cookie("marshal", { sub: "M1", level: "marshal", name: "Mario" });
+const asMario = () =>
+  cookie("admin", { sub: "A2", level: "admin", name: "Mario" });
 const asAdmin = () =>
   cookie("admin", { sub: "A1", level: "admin", name: "Ana" });
 const asPassenger = () =>
@@ -60,7 +60,7 @@ const act = async (id, action, body = {}, c) =>
     method: "POST",
     query: { id, action },
     body,
-    cookie: c ?? (await asMarshal()),
+    cookie: c ?? (await asMario()),
   });
 const get = async (id) =>
   (await call(reports, { cookie: await asAdmin() })).body.find(
@@ -121,11 +121,11 @@ test("take a report, or hand it to a colleague", async () => {
     ["created", "assigned", "acknowledged"],
   );
 
-  const other = await act(id, "assign", { userId: "M2" });
+  const other = await act(id, "assign", { userId: "A4" });
   assert.equal(other.body.assignedTo.name, "Maria");
   assert.equal(other.body.timeline.at(-1).type, "assigned");
   assert.equal(
-    (await act(id, "assign", { userId: "M3" })).status,
+    (await act(id, "assign", { userId: "A3" })).status,
     404,
     "disabled",
   );
@@ -189,7 +189,7 @@ test("resolve records how it ended; the reporter is told", async () => {
   );
 });
 
-test("only an admin can reopen a resolved report, with a reason", async () => {
+test("a resolved report can be reopened, with a reason", async () => {
   seed();
   const id = await sos();
   assert.equal(
@@ -198,11 +198,6 @@ test("only an admin can reopen a resolved report, with a reason", async () => {
     "not resolved yet",
   );
   await act(id, "resolve", { note: "ok" });
-  assert.equal(
-    (await act(id, "reopen", { note: "needs more" })).status,
-    403,
-    "marshal",
-  );
   assert.equal(
     (await act(id, "reopen", {}, await asAdmin())).status,
     400,
@@ -231,7 +226,7 @@ test("an SOS nobody answered for 3 minutes is flagged overdue", async () => {
     (
       await call(reports, {
         query: { action: "alerts" },
-        cookie: await asMarshal(),
+        cookie: await asAdmin(),
       })
     ).body;
   assert.equal((await alerts())[0].overdue, false);
@@ -256,12 +251,12 @@ test("who can work reports; the staff list", async () => {
   assert.equal((await act(id, "ack", {}, "")).status, 401);
   const staff = await call(reports, {
     query: { action: "staff" },
-    cookie: await asMarshal(),
+    cookie: await asAdmin(),
   });
   assert.equal(staff.status, 200);
   assert.deepEqual(
     staff.body.map((s) => s.name),
-    ["Ana", "Boss", "Mario", "Maria"].sort(),
+    ["Ana", "Boss", "Maria", "Mario"],
   );
   assert.equal(
     (

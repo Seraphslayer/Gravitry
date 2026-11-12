@@ -3,14 +3,7 @@ import { Truck, Star, Wifi, X } from "lucide-react";
 import L from "leaflet";
 import PushToggle from "./PushToggle.jsx";
 import { useAuth } from "./AuthContext.jsx";
-import {
-  MapContainer,
-  TileLayer,
-  Marker,
-  Popup,
-  useMap,
-  useMapEvents,
-} from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import {
   C,
   GR,
@@ -45,8 +38,6 @@ import {
   renewTricycleRental,
   releaseTricycle,
   getRequests,
-  getQuote,
-  createWalkup,
   overrideRequest,
   cancelRequest,
   getVerifications,
@@ -2866,7 +2857,7 @@ function DataTab() {
   );
 }
 
-function OverrideTab({ waiting, drivers, loading, onChanged, canManageCards }) {
+function OverrideTab({ waiting, drivers, loading, onChanged }) {
   const [err, setErr] = useNotice("");
   const [pick, setPick] = useState({});
   const [reason, setReason] = useState({});
@@ -2973,7 +2964,7 @@ function OverrideTab({ waiting, drivers, loading, onChanged, canManageCards }) {
           >
             <b style={{ fontSize: 14, color: C.text }}>{r._id}</b>
             <Badge variant={r.source === "kiosk" ? "blue" : "gray"}>
-              {r.walkup ? "Walk-up" : r.source === "kiosk" ? "Kiosk" : "App"}
+              {r.source === "kiosk" ? "Kiosk" : "App"}
             </Badge>
             {r.discountClaim && (
               <Badge variant="yellow">Claims {r.discountClaim}</Badge>
@@ -3057,7 +3048,7 @@ function OverrideTab({ waiting, drivers, loading, onChanged, canManageCards }) {
           </div>
         </div>
       ))}
-      {canManageCards && <StaffCards />}
+      <StaffCards />
     </div>
   );
 }
@@ -4451,7 +4442,7 @@ function LogTab({ logs, loading }) {
                         textTransform: "uppercase",
                       }}
                     >
-                      {log.walkup ? "Walk-up" : "Kiosk"}
+                      Kiosk
                     </div>
                   )}
                 </td>
@@ -4507,8 +4498,23 @@ function LogTab({ logs, loading }) {
                     color: C.green,
                   }}
                 >
-                  {"\u20B1"}
-                  {log.fare}.00
+                  {log.optOut ? (
+                    <span
+                      style={{
+                        fontFamily: IN,
+                        fontWeight: 600,
+                        fontSize: 11,
+                        color: C.muted,
+                      }}
+                    >
+                      No-system trip
+                    </span>
+                  ) : (
+                    <>
+                      {"\u20B1"}
+                      {log.fare}.00
+                    </>
+                  )}
                   {log.discountApplied && (
                     <div
                       style={{
@@ -5506,398 +5512,11 @@ function VerifyTab({ items, loading, onChanged }) {
   );
 }
 
-// ---- Walk-up booking (marshal / admin) ---------------------------------------
-// For a passenger standing at the terminal who has no app and can't use the
-// kiosk: staff pick where they are going, see the fare, and book it for them.
-function MapClick({ onPick }) {
-  useMapEvents({ click: (e) => onPick(e.latlng) });
-  return null;
-}
-
-function WalkupTab({ onChanged }) {
-  const [origin, setOrigin] = useState("T1");
-  const [dest, setDest] = useState(null); // { lat, lng }
-  const [label, setLabel] = useState("");
-  const [quote, setQuote] = useState(null);
-  const [quoteErr, setQuoteErr] = useState("");
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [claim, setClaim] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [done, setDone] = useState(null);
-  const term = getTerm(origin);
-
-  // Fare for the chosen drop-off (re-asked when the terminal or point changes).
-  useEffect(() => {
-    if (!dest) return;
-    let alive = true;
-    setQuote(null);
-    setQuoteErr("");
-    getQuote(
-      { lat: term.lat, lng: term.lng, label: term.name },
-      {
-        lat: dest.lat,
-        lng: dest.lng,
-        label: label.trim() || "Pinned location",
-      },
-    )
-      .then((q) => alive && setQuote(q))
-      .catch((e) => alive && setQuoteErr(apiMessage(e)));
-    return () => {
-      alive = false;
-    };
-  }, [origin, dest]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const book = async () => {
-    setBusy(true);
-    setErr("");
-    try {
-      const r = await createWalkup({
-        origin,
-        quoteToken: quote.quoteToken,
-        passengerName: name.trim() || undefined,
-        contact: phone.trim() || undefined,
-        discountClaim: claim || undefined,
-      });
-      setDone(r);
-      setDest(null);
-      setQuote(null);
-      setLabel("");
-      setName("");
-      setPhone("");
-      setClaim("");
-      onChanged();
-    } catch (e) {
-      setErr(apiMessage(e));
-    }
-    setBusy(false);
-  };
-
-  const box = {
-    background: C.white,
-    borderRadius: 12,
-    border: `1px solid ${C.border}`,
-    padding: 16,
-    marginBottom: 14,
-  };
-  const input = {
-    border: `1px solid ${C.border}`,
-    borderRadius: 8,
-    padding: "9px 10px",
-    fontFamily: IN,
-    fontSize: 13,
-    width: "100%",
-    boxSizing: "border-box",
-  };
-  const lab = {
-    fontFamily: GR,
-    fontSize: 11.5,
-    fontWeight: 700,
-    color: C.muted,
-    marginBottom: 4,
-    display: "block",
-  };
-
-  return (
-    <div>
-      {done && (
-        <div style={{ ...box, background: "#ECFDF5", borderColor: "#6EE7B7" }}>
-          <div
-            style={{
-              fontFamily: GR,
-              fontWeight: 700,
-              color: "#065F46",
-              fontSize: 14,
-            }}
-          >
-            Ride {done._id} booked at {getTerm(done.origin)?.short}
-          </div>
-          <div
-            style={{
-              fontFamily: IN,
-              fontSize: 12.5,
-              color: "#065F46",
-              marginTop: 4,
-            }}
-          >
-            Fare {"\u20B1"}
-            {done.fare}. It is waiting for a driver: the first driver in line
-            taps their card at the kiosk, or hand it over from the Override tab.
-            <button
-              onClick={() => setDone(null)}
-              style={{
-                marginLeft: 8,
-                border: "none",
-                background: "none",
-                cursor: "pointer",
-                fontWeight: 700,
-              }}
-            >
-              Hide
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div style={box}>
-        <div
-          style={{
-            fontFamily: GR,
-            fontWeight: 700,
-            fontSize: 14,
-            color: C.navy,
-            marginBottom: 4,
-          }}
-        >
-          Walk-up booking
-        </div>
-        <div
-          style={{
-            fontFamily: IN,
-            fontSize: 12,
-            color: C.muted,
-            marginBottom: 12,
-          }}
-        >
-          For a passenger at the terminal who has no app. Tap the map where they
-          are going, then book. It goes to the front of the waiting rides, like
-          a kiosk ride.
-        </div>
-
-        <label style={lab}>Terminal where the passenger is</label>
-        <select
-          style={{ ...input, marginBottom: 12 }}
-          value={origin}
-          onChange={(e) => setOrigin(e.target.value)}
-        >
-          {TERMINALS.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-
-        <label style={lab}>Where are they going? (tap the map)</label>
-        <div
-          style={{
-            height: 300,
-            borderRadius: 10,
-            overflow: "hidden",
-            border: `1px solid ${C.border}`,
-            marginBottom: 8,
-          }}
-        >
-          <MapContainer
-            center={[term.lat, term.lng]}
-            zoom={16}
-            style={{ width: "100%", height: "100%" }}
-          >
-            <TileLayer
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              attribution="&copy; OpenStreetMap"
-            />
-            <MapClick onPick={(p) => setDest({ lat: p.lat, lng: p.lng })} />
-            {TERMINALS.map((t) => (
-              <Marker
-                key={t.id}
-                position={[t.lat, t.lng]}
-                interactive={false}
-                icon={L.divIcon({
-                  className: "",
-                  html: `<div style="transform:translate(-50%,-50%);background:${t.id === origin ? "#16A34A" : C.navy};color:#fff;border:2px solid #fff;border-radius:6px;padding:2px 6px;font:700 10px 'Space Grotesk',sans-serif;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.35)">${esc(t.short)}</div>`,
-                  iconSize: [0, 0],
-                })}
-              />
-            ))}
-            {dest && (
-              <Marker
-                position={[dest.lat, dest.lng]}
-                icon={driverPin("Drop-off", true)}
-              />
-            )}
-          </MapContainer>
-        </div>
-        <div
-          style={{
-            display: "flex",
-            gap: 6,
-            flexWrap: "wrap",
-            marginBottom: 10,
-          }}
-        >
-          <span
-            style={{
-              fontFamily: IN,
-              fontSize: 11.5,
-              color: C.muted,
-              alignSelf: "center",
-            }}
-          >
-            or a terminal:
-          </span>
-          {TERMINALS.filter((t) => t.id !== origin).map((t) => (
-            <button
-              key={t.id}
-              onClick={() => {
-                setDest({ lat: t.lat, lng: t.lng });
-                setLabel(t.name);
-              }}
-              style={{
-                background: "none",
-                border: `1px solid ${C.border}`,
-                borderRadius: 8,
-                padding: "4px 9px",
-                fontFamily: GR,
-                fontSize: 11.5,
-                fontWeight: 600,
-                color: C.navy,
-                cursor: "pointer",
-              }}
-            >
-              {t.short}
-            </button>
-          ))}
-        </div>
-
-        <label style={lab}>
-          Landmark / address (optional, shown to the driver)
-        </label>
-        <input
-          style={{ ...input, marginBottom: 12 }}
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          maxLength={80}
-          placeholder="e.g. Barangay hall"
-        />
-
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            flexWrap: "wrap",
-            marginBottom: 12,
-          }}
-        >
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={lab}>Passenger name (optional)</label>
-            <input
-              style={input}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={60}
-            />
-          </div>
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={lab}>Phone (optional)</label>
-            <input
-              style={input}
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              maxLength={20}
-              inputMode="tel"
-            />
-          </div>
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={lab}>Discount (check the ID first)</label>
-            <select
-              style={input}
-              value={claim}
-              onChange={(e) => setClaim(e.target.value)}
-            >
-              <option value="">None</option>
-              {DISCOUNT_KEYS.map((k) => (
-                <option key={k} value={k}>
-                  {discountLabel(k)}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {dest && (
-          <div
-            style={{
-              background: C.surface,
-              borderRadius: 10,
-              padding: "10px 12px",
-              fontFamily: IN,
-              fontSize: 13,
-              color: C.text,
-              marginBottom: 12,
-            }}
-          >
-            {quote ? (
-              <>
-                {fmtKm(quote.distanceMeters)}
-                {quote.estimated ? " (estimated)" : ""} · Fare{" "}
-                <b>
-                  {"\u20B1"}
-                  {claim
-                    ? Math.round(
-                        quote.regularFare * (1 - quote.discountPercent / 100),
-                      )
-                    : quote.regularFare}
-                </b>
-                {claim && (
-                  <span style={{ color: C.muted }}>
-                    {" "}
-                    (regular {"\u20B1"}
-                    {quote.regularFare}, {quote.discountPercent}% off once the
-                    driver confirms the ID)
-                  </span>
-                )}
-              </>
-            ) : quoteErr ? (
-              <span style={{ color: "#B91C1C" }}>{quoteErr}</span>
-            ) : (
-              "Working out the fare..."
-            )}
-          </div>
-        )}
-        {err && (
-          <div
-            style={{
-              color: "#B91C1C",
-              fontSize: 12.5,
-              fontFamily: IN,
-              marginBottom: 8,
-            }}
-          >
-            {err}
-          </div>
-        )}
-        <button
-          disabled={busy || !quote}
-          onClick={book}
-          style={{
-            background: quote ? "#1C7C54" : "#9CA3AF",
-            color: "#fff",
-            border: "none",
-            borderRadius: 10,
-            padding: "12px 22px",
-            fontFamily: GR,
-            fontWeight: 700,
-            fontSize: 14,
-            cursor: quote ? "pointer" : "default",
-          }}
-        >
-          {busy ? "Booking..." : "Book ride"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ---- Staff accounts (super admin only) ---------------------------------------
 const LEVEL_INFO = {
-  marshal: {
-    label: "Marshal",
-    help: "Runs the terminal: dispatch, line, walk-up bookings, incidents.",
-  },
   admin: {
     label: "Admin",
-    help: "Marshal + drivers, tricycles, tariff, verification, reports.",
+    help: "Runs the system: dispatch, drivers, tricycles, tariff, verification, incidents, reports.",
   },
   super_admin: {
     label: "Super admin",
@@ -5916,7 +5535,7 @@ function AccountsTab() {
   const [form, setForm] = useState({
     username: "",
     name: "",
-    level: "marshal",
+    level: "admin",
   });
 
   const load = useCallback(async () => {
@@ -6192,10 +5811,10 @@ function AccountsTab() {
   );
 }
 
-// What each tab needs. Marshals run the terminal; admins manage the system;
-// the super admin also manages staff accounts and data export. (The server
+// What each tab needs. Admins run the system; the super admin also manages
+// staff accounts and data export. (The server
 // enforces this too; hiding a tab is only for tidiness.)
-const LEVEL_RANK = { marshal: 1, admin: 2, super_admin: 3 };
+const LEVEL_RANK = { admin: 1, super_admin: 2 };
 const ADMIN_TABS = [
   ["drivers", "Drivers", "admin"],
   ["tricycles", "Tricycles", "admin"],
@@ -6203,11 +5822,10 @@ const ADMIN_TABS = [
   ["users", "Users", "admin"],
   ["verify", "Verify", "admin"],
   ["map", "Map", "admin"],
-  ["attendance", "Attendance", "marshal"],
-  ["walkup", "Walk-up", "marshal"],
-  ["override", "Override", "marshal"],
-  ["incidents", "Incidents", "marshal"],
-  ["log", "Log", "marshal"],
+  ["attendance", "Attendance", "admin"],
+  ["override", "Override", "admin"],
+  ["incidents", "Incidents", "admin"],
+  ["log", "Log", "admin"],
   ["reports", "Reports", "admin"],
   ["status", "Status", "admin"],
   ["data", "Data", "super_admin"],
@@ -6217,11 +5835,10 @@ const ADMIN_TABS = [
 export default function AdminView() {
   const { user, logout } = useAuth();
   const level = user?.level || "admin";
-  const isMarshal = level === "marshal";
   const myTabs = ADMIN_TABS.filter(
     ([, , min]) => LEVEL_RANK[level] >= LEVEL_RANK[min],
   );
-  const [tab, setTab] = useState(isMarshal ? "walkup" : "drivers");
+  const [tab, setTab] = useState("drivers");
   const [drivers, setDrivers] = useState([]);
   const [tricycles, setTricycles] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -6243,7 +5860,7 @@ export default function AdminView() {
     } catch {
       /* keep last known good state */
     }
-    if (!isMarshal) {
+    {
       try {
         setVerifs(await getVerifications());
       } catch {
@@ -6261,7 +5878,7 @@ export default function AdminView() {
       /* keep last known reports */
     }
     setLoading(false);
-  }, [isMarshal]);
+  }, []);
 
   useEffect(() => {
     loadAll();
@@ -6320,7 +5937,7 @@ export default function AdminView() {
               textTransform: "uppercase",
             }}
           >
-            {isMarshal ? "Marshal Console" : "Admin Dashboard"}
+            Admin Dashboard
           </div>
           <div
             style={{
@@ -6381,53 +5998,51 @@ export default function AdminView() {
           padding: "clamp(12px,3vw,20px)",
         }}
       >
-        {!isMarshal && (
-          <div
-            className="admin-stats-grid"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4,1fr)",
-              gap: 10,
-              marginBottom: 20,
-            }}
-          >
-            {stats.map((s) => (
+        <div
+          className="admin-stats-grid"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4,1fr)",
+            gap: 10,
+            marginBottom: 20,
+          }}
+        >
+          {stats.map((s) => (
+            <div
+              key={s.label}
+              style={{
+                background: C.white,
+                borderRadius: 12,
+                padding: "14px 16px",
+                border: `1px solid ${C.border}`,
+              }}
+            >
               <div
-                key={s.label}
                 style={{
-                  background: C.white,
-                  borderRadius: 12,
-                  padding: "14px 16px",
-                  border: `1px solid ${C.border}`,
+                  fontSize: "clamp(20px,5vw,26px)",
+                  fontWeight: 700,
+                  fontFamily: GR,
+                  color: C.navy,
                 }}
               >
-                <div
-                  style={{
-                    fontSize: "clamp(20px,5vw,26px)",
-                    fontWeight: 700,
-                    fontFamily: GR,
-                    color: C.navy,
-                  }}
-                >
-                  {s.value}
-                </div>
-                <div
-                  style={{
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    fontFamily: GR,
-                    color: C.text,
-                  }}
-                >
-                  {s.label}
-                </div>
-                <div style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
-                  {s.sub}
-                </div>
+                {s.value}
               </div>
-            ))}
-          </div>
-        )}
+              <div
+                style={{
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  fontFamily: GR,
+                  color: C.text,
+                }}
+              >
+                {s.label}
+              </div>
+              <div style={{ fontSize: 10.5, color: C.muted, fontFamily: IN }}>
+                {s.sub}
+              </div>
+            </div>
+          ))}
+        </div>
 
         <div
           style={{
@@ -6523,7 +6138,6 @@ export default function AdminView() {
         {tab === "status" && <StatusTab />}
         {tab === "data" && <DataTab />}
         {tab === "accounts" && <AccountsTab />}
-        {tab === "walkup" && <WalkupTab onChanged={loadAll} />}
         {tab === "users" && <UsersTab />}
         {tab === "verify" && (
           <VerifyTab items={verifs} loading={loading} onChanged={loadAll} />
@@ -6532,7 +6146,6 @@ export default function AdminView() {
         {tab === "attendance" && <AttendanceTab drivers={drivers} />}
         {tab === "override" && (
           <OverrideTab
-            canManageCards={!isMarshal}
             waiting={waiting}
             drivers={drivers}
             loading={loading}

@@ -28,7 +28,7 @@ export default async function handler(req, res) {
     const { action, terminal } = req.query;
 
     if (req.method === "GET" && action === "all") {
-      if (!(await requireStaff(db, req, res, ["admin", "marshal"]))) return;
+      if (!(await requireStaff(db, req, res, ["admin"]))) return;
       const all = [];
       for (const t of TERMINALS) all.push(await lineSnapshot(db, t.id));
       return res.status(200).json(all);
