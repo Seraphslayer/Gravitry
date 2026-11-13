@@ -1,7 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { getDb } from "./_db.js";
 import { getSessionFromReq, getStaffFromReq } from "./_auth.js";
-import { requireSession, isNonEmptyString, requireStaff } from "./_authz.js";
+import {
+  requireSession,
+  isNonEmptyString,
+  requireStaff,
+  isActiveStaff,
+} from "./_authz.js";
 import { withinRate } from "./_images.js";
 import { notify, notifyAccepted, msg } from "./_push.js";
 import { tempAccessDeadline } from "./_settings.js";
@@ -34,6 +39,8 @@ const LINE_STRICT = true;
 
 // How long the kiosk's "I don't want to use the system" option waits for the
 // driver to tap their card.
+// Newest rides returned by the list endpoint (polled every few seconds).
+const LIST_LIMIT = 500;
 const OPTOUT_MINUTES = 2;
 
 // Policy switch: may a passenger whose account is still pending staff
@@ -115,10 +122,11 @@ async function withinGlobalNfcRate(db) {
 // Who may see a ride's passenger details (name, id, exact map points)? TODA
 // staff (admin), drivers, and the kiosk staff panel. Everyone else (the public
 // kiosk screen, other passengers) gets the trimmed view below.
-function canSeePassengerDetails(req) {
+async function canSeePassengerDetails(db, req) {
   if (getStaffFromReq(req)) return true;
   const s = getSessionFromReq(req);
-  return s?.role === "admin" || s?.role === "driver";
+  if (s?.role === "driver") return true;
+  return isActiveStaff(db, req);
 }
 
 // A ride without who booked it or where exactly they stand. Ride ids are
@@ -770,13 +778,17 @@ export default async function handler(req, res) {
         filter.passengerId = passengerId;
       }
 
-      const docs = await col.find(filter).sort({ ts: -1 }).toArray();
+      const docs = await col
+        .find(filter)
+        .sort({ ts: -1 })
+        .limit(LIST_LIMIT)
+        .toArray();
       // Own history (passengerId) was already checked above; any other list is
       // trimmed unless staff or a driver is asking.
-      const isAdmin = getSessionFromReq(req)?.role === "admin";
+      const isAdmin = await isActiveStaff(db, req);
       const out = passengerId
         ? docs
-        : canSeePassengerDetails(req)
+        : (await canSeePassengerDetails(db, req))
           ? docs.map((d) => (isAdmin ? d : withoutToken(d)))
           : docs.map(publicView);
       return res.status(200).json(out);
@@ -791,13 +803,13 @@ export default async function handler(req, res) {
       const me = getSessionFromReq(req);
       const owner =
         me?.role === "passenger" && me.passengerId === doc.passengerId;
-      const isAdmin = me?.role === "admin";
+      const isAdmin = await isActiveStaff(db, req);
       return res
         .status(200)
         .json(
           owner || isAdmin
             ? doc
-            : canSeePassengerDetails(req)
+            : (await canSeePassengerDetails(db, req))
               ? withoutToken(doc)
               : publicView(doc),
         );

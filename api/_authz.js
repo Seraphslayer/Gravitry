@@ -55,6 +55,17 @@ export async function requireStaff(db, req, res, allowedRoles = ["admin"]) {
   return { ...session, level: levelOf(user) };
 }
 
+// True only for a live, active staff account. For read endpoints that show
+// more to staff (no 401 for everyone else): a disabled or deleted account's
+// old cookie must not keep seeing staff-only data.
+export async function isActiveStaff(db, req) {
+  const s = getSessionFromReq(req);
+  if (!s || s.role !== "admin") return false;
+  if (!s.level) return true; // pre-level session, expires within a day
+  const user = await db.collection("users").findOne({ _id: s.sub });
+  return !!user && user.active !== false;
+}
+
 // Super admin only (staff accounts, database export). Always checked against
 // the database, so it also works for older sessions.
 export async function requireSuperAdmin(db, req, res) {
