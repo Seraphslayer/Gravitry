@@ -13,6 +13,29 @@ if (!cached) {
   cached = global._gravitryMongo = { client: null, promise: null };
 }
 
+// Indexes the polling queries need. Created once per warm instance; createIndex
+// does nothing if the index already exists. Failures are ignored on purpose.
+const INDEXES = [
+  ["requests", { status: 1, origin: 1, ts: -1 }],
+  ["requests", { ts: -1 }],
+  ["requests", { passengerId: 1, ts: -1 }],
+  ["requests", { driverId: 1, status: 1 }],
+  ["terminal_line", { terminal: 1, joinedAt: 1 }],
+  ["attendance", { date: 1 }],
+  ["reports", { status: 1, ts: -1 }],
+];
+async function ensureIndexes(db) {
+  if (cached.indexed) return;
+  cached.indexed = true;
+  for (const [name, keys, opts] of INDEXES) {
+    try {
+      await db.collection(name).createIndex(keys, opts);
+    } catch {
+      /* ignore: an index is an optimisation, never a reason to fail */
+    }
+  }
+}
+
 export async function getDb() {
   if (!uri) throw new Error("Missing MONGODB_URI environment variable");
   if (cached.client) return cached.client.db("gravitry");
@@ -24,5 +47,7 @@ export async function getDb() {
     });
   }
   const client = await cached.promise;
-  return client.db("gravitry");
+  const db = client.db("gravitry");
+  ensureIndexes(db); // fire and forget
+  return db;
 }

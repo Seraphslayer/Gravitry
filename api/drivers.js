@@ -1,5 +1,5 @@
 import { getDb } from "./_db.js";
-import { requireSession, requireStaff } from "./_authz.js";
+import { requireSession, requireStaff, isActiveStaff } from "./_authz.js";
 import { hashPassword, getSessionFromReq, generatePassword } from "./_auth.js";
 
 // Fields nobody but the login system should ever see or be able to overwrite
@@ -292,7 +292,7 @@ export default async function handler(req, res) {
       // The NFC card number is a driver's "password" at the kiosk, so only the
       // admin may see it (with the license number and phone). Everyone else
       // gets the safety record: name, unit, plate, status, rating.
-      const isAdmin = getSessionFromReq(req)?.role === "admin";
+      const isAdmin = await isActiveStaff(db, req);
       const hidden = isAdmin
         ? {}
         : { nfcId: 0, license: 0, contact: 0, ratingSum: 0 };

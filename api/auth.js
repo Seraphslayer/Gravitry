@@ -233,7 +233,17 @@ export default async function handler(req, res) {
       }
       // Each signup stores two or three photos, so cap how fast accounts can
       // be created (protects the database from being filled by a script).
-      if (!(await withinRate(db, "signup", 15, 10 * 60 * 1000))) {
+      const ip =
+        String(req.headers?.["x-forwarded-for"] || "")
+          .split(",")[0]
+          .trim()
+          .slice(0, 64) || "unknown";
+      // Per address, so one abuser cannot block everyone else; the global
+      // cap stays as a backstop for the database.
+      if (
+        !(await withinRate(db, `signup:${ip}`, 5, 10 * 60 * 1000)) ||
+        !(await withinRate(db, "signup", 60, 10 * 60 * 1000))
+      ) {
         return res.status(429).json({
           error: "Too many signups right now. Try again in a few minutes.",
         });
