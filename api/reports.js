@@ -8,7 +8,15 @@ import { notify, msg } from "./_push.js";
 //   POST /api/reports?action=create   passenger or driver
 //        { kind: "sos" | "incident", category?, description?, requestId?, lat?, lng? }
 //   GET  /api/reports                 admin: all reports, newest first
-//   POST /api/reports?id=IR-001&action=ack | resolve   admin  { note? }
+//   GET  /api/reports?action=staff    admin: active staff, for "assign to"
+//   POST /api/reports?id=IR-001&action=...   admin
+//        ack                       { note? }  "we got it"
+//        assign                    { userId? } take it yourself, or give it to a staff member
+//        note                      { note }   a progress update in the timeline
+//        resolve                   { outcome?, note? }  outcome: resolved | false_alarm | referred | no_action
+//        reopen (admin only)       { note }   a resolved report that needs more work
+// Every step is kept in `timeline` (who, when, what), so the report can be
+// reviewed later. An SOS nobody has answered for SOS_OVERDUE_MIN is `overdue`.
 //
 // An SOS is one tap: it only needs the person (from the session) and, if the
 // phone can give it, their location. An incident report needs a category and a
@@ -46,6 +54,59 @@ async function nextId(db, name, prefix) {
   const seq = result?.value?.seq ?? result?.seq ?? 1;
   return `${prefix}-${String(seq).padStart(3, "0")}`;
 }
+
+const OUTCOMES = {
+  resolved: "Resolved",
+  false_alarm: "False alarm",
+  referred: "Referred to police / barangay / hospital",
+  no_action: "No action needed",
+};
+const SOS_OVERDUE_MIN = 3;
+
+const asPerson = (session) => ({
+  id: session.sub,
+  name: session.name || "Staff",
+  level: session.level || null,
+});
+
+// The history of a report. Reports made before timelines existed get one built
+// from their old fields.
+function timelineOf(doc) {
+  if (Array.isArray(doc.timeline) && doc.timeline.length) return doc.timeline;
+  const out = [
+    {
+      type: "created",
+      at: doc.ts,
+      by: { name: doc.reporter?.name || "Reporter" },
+    },
+  ];
+  if (doc.acknowledgedAt)
+    out.push({
+      type: "acknowledged",
+      at: doc.acknowledgedAt,
+      by: { id: doc.acknowledgedBy },
+      note: doc.acknowledgedNote || "",
+    });
+  if (doc.resolvedAt)
+    out.push({
+      type: "resolved",
+      at: doc.resolvedAt,
+      by: { id: doc.resolvedBy },
+      note: doc.resolutionNote || "",
+    });
+  return out;
+}
+
+const isOverdue = (doc) =>
+  doc.kind === "sos" &&
+  doc.status === "open" &&
+  Date.now() - new Date(doc.ts).getTime() > SOS_OVERDUE_MIN * 60000;
+
+const present = (doc) => ({
+  ...doc,
+  timeline: timelineOf(doc),
+  overdue: isOverdue(doc),
+});
 
 const validPoint = (lat, lng) =>
   Number.isFinite(lat) &&
@@ -175,6 +236,13 @@ export default async function handler(req, res) {
         location,
         status: "open",
         ts: new Date().toISOString(),
+        timeline: [
+          {
+            type: "created",
+            at: new Date().toISOString(),
+            by: { name: reporter?.name || "Reporter" },
+          },
+        ],
       };
       await col.insertOne(doc);
       // TODA staff get it on their phones even if the admin page is closed.
@@ -201,6 +269,10 @@ export default async function handler(req, res) {
         acknowledgedAt: doc.acknowledgedAt || null,
         acknowledgedNote: doc.acknowledgedNote || null,
         resolvedAt: doc.resolvedAt || null,
+        resolutionNote:
+          doc.status === "resolved" ? doc.resolutionNote || null : null,
+        outcome: doc.status === "resolved" ? doc.outcome || null : null,
+        assignedTo: doc.assignedTo?.name || null,
       });
     }
 
@@ -220,6 +292,8 @@ export default async function handler(req, res) {
           kind: d.kind,
           categoryLabel: d.categoryLabel,
           status: d.status,
+          overdue: isOverdue(d),
+          assignedTo: d.assignedTo?.name || null,
           ts: d.ts,
           reporter: d.reporter
             ? {
@@ -234,19 +308,32 @@ export default async function handler(req, res) {
       );
     }
 
+    // ---- staff list for "assign to" -------------------------------------------
+    if (req.method === "GET" && action === "staff") {
+      const session = await requireStaff(db, req, res, ["admin"]);
+      if (!session) return;
+      const users = await db.collection("users").find({}).toArray();
+      return res.status(200).json(
+        users
+          .filter((u) => u.active !== false)
+          .map((u) => ({ id: u._id, name: u.name || u.username }))
+          .sort((a, b) => (a.name < b.name ? -1 : 1)),
+      );
+    }
+
     // ---- admin: list ---------------------------------------------------------
     if (req.method === "GET" && !id) {
       const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const docs = await col.find({}).sort({ ts: -1 }).toArray();
-      return res.status(200).json(docs);
+      return res.status(200).json(docs.map(present));
     }
 
-    // ---- admin: acknowledge / resolve -----------------------------------
+    // ---- staff: work a report (ack / assign / note / resolve / reopen) ----------
     if (
       req.method === "POST" &&
       id &&
-      (action === "ack" || action === "resolve")
+      ["ack", "assign", "note", "resolve", "reopen"].includes(action)
     ) {
       const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
@@ -255,32 +342,111 @@ export default async function handler(req, res) {
           ? req.body.note.trim().slice(0, 400)
           : "";
       const nowIso = new Date().toISOString();
-      const set =
-        action === "ack"
-          ? {
-              status: "acknowledged",
-              acknowledgedAt: nowIso,
-              acknowledgedBy: session.sub,
-              acknowledgedNote: note || "Papunta na ang tulong",
-            }
-          : {
-              status: "resolved",
-              resolvedAt: nowIso,
-              resolvedBy: session.sub,
-              resolutionNote: note,
-            };
+      const me = asPerson(session);
       const existing = await col.findOne({ _id: id });
       if (!existing) return res.status(404).json({ error: "Report not found" });
-      if (existing.status === "resolved")
+      const history = timelineOf(existing);
+      const event = (type, extra = {}) => ({
+        type,
+        at: nowIso,
+        by: me,
+        ...(note ? { note } : {}),
+        ...extra,
+      });
+      const set = {};
+      const unset = {};
+      const events = [];
+      let tellReporter = null;
+
+      if (action === "reopen") {
+        if (existing.status !== "resolved")
+          return res
+            .status(409)
+            .json({ error: "Only a resolved report can be reopened" });
+        if (note.length < 3)
+          return res
+            .status(400)
+            .json({ error: "Say why it is being reopened" });
+        set.status = "open";
+        set.reopenedAt = nowIso;
+        for (const k of [
+          "resolvedAt",
+          "resolvedBy",
+          "resolutionNote",
+          "outcome",
+        ])
+          unset[k] = "";
+        events.push(event("reopened"));
+      } else if (existing.status === "resolved" && action !== "note") {
         return res.status(409).json({ error: "Already resolved" });
-      await col.updateOne({ _id: id }, { $set: set });
-      if (action === "ack" && existing.reporter?.id)
+      } else if (action === "ack") {
+        if (existing.status !== "open")
+          return res.status(409).json({ error: "Already acknowledged" });
+        set.status = "acknowledged";
+        set.acknowledgedAt = nowIso;
+        set.acknowledgedBy = session.sub;
+        set.acknowledgedNote = note || "Papunta na ang tulong";
+        events.push(event("acknowledged"));
+        tellReporter = "seen";
+      } else if (action === "assign") {
+        let who = me;
+        if (req.body?.userId && req.body.userId !== session.sub) {
+          if (typeof req.body.userId !== "string")
+            return res.status(400).json({ error: "Choose a staff member" });
+          const u = await db
+            .collection("users")
+            .findOne({ _id: req.body.userId });
+          if (!u || u.active === false)
+            return res.status(404).json({ error: "Staff member not found" });
+          who = { id: u._id, name: u.name || u.username };
+        }
+        set.assignedTo = who;
+        set.assignedAt = nowIso;
+        events.push(event("assigned", { to: who }));
+        if (existing.status === "open") {
+          // someone owns it now, so it counts as answered
+          set.status = "acknowledged";
+          set.acknowledgedAt = nowIso;
+          set.acknowledgedBy = session.sub;
+          set.acknowledgedNote = note || "Papunta na ang tulong";
+          events.push(event("acknowledged"));
+          tellReporter = "seen";
+        }
+      } else if (action === "note") {
+        if (!note)
+          return res.status(400).json({ error: "Write the update first" });
+        events.push(event("note"));
+      } else {
+        // resolve
+        const outcome = req.body?.outcome ?? "resolved";
+        if (typeof outcome !== "string" || !OUTCOMES[outcome])
+          return res.status(400).json({ error: "Choose how it ended" });
+        if (outcome === "referred" && note.length < 3)
+          return res.status(400).json({ error: "Say who it was referred to" });
+        set.status = "resolved";
+        set.resolvedAt = nowIso;
+        set.resolvedBy = session.sub;
+        set.resolutionNote = note;
+        set.outcome = outcome;
+        events.push(event("resolved", { outcome }));
+        tellReporter = "resolved";
+      }
+
+      const update = { $set: { ...set, timeline: [...history, ...events] } };
+      if (Object.keys(unset).length) update.$unset = unset;
+      await col.updateOne({ _id: id }, update);
+      const fresh = { ...existing, ...set };
+      for (const k of Object.keys(unset)) delete fresh[k];
+      fresh.timeline = [...history, ...events];
+      if (tellReporter && existing.reporter?.id)
         await notify(
           db,
           { role: existing.reporter.role, id: existing.reporter.id },
-          msg.reportSeen({ ...existing, ...set }),
+          tellReporter === "seen"
+            ? msg.reportSeen(fresh)
+            : msg.reportResolved(fresh),
         );
-      return res.status(200).json({ ...existing, ...set });
+      return res.status(200).json(present(fresh));
     }
 
     return res.status(405).json({ error: "Method not allowed" });

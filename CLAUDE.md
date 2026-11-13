@@ -4,6 +4,7 @@ Kiosk-based tricycle terminal dispatch for the MCC TODA (Mary Cris Complex,
 Brgy. Pasong Camachile II, General Trias, Cavite). CpE thesis project, NCST.
 
 ## Stack
+
 - Frontend: React + Vite (`src/`), Leaflet + OpenStreetMap maps.
 - Backend: Node serverless functions in `api/` on Vercel. MongoDB Atlas.
 - Realtime is polling (3-8 s), not WebSockets (Vercel serverless).
@@ -12,13 +13,15 @@ Brgy. Pasong Camachile II, General Trias, Cavite). CpE thesis project, NCST.
   staff use a short-lived `x-staff-token` header instead (card + PIN).
 
 ## Commands (the user is on Windows / PowerShell, not bash)
+
 - `npm run dev` - run locally
 - `npm run check` - syntax-check every `api/*.js` and count serverless functions
 - `npm test` - API tests (in-memory fake MongoDB, no network)
 - `npm run build` - production build
-Run `npm run check`, `npm test` and `npm run build` before saying a change works.
+  Run `npm run check`, `npm test` and `npm run build` before saying a change works.
 
 ## Rules that came from real problems
+
 - API files have plain names (`fares.js`, `drivers.js`, ...). NEVER use
   `[...path].js` style names; they broke deployment on Windows/git. Use query
   params (`?id=X&action=Y`) instead of dynamic path segments.
@@ -45,10 +48,12 @@ Run `npm run check`, `npm test` and `npm run build` before saying a change works
   TEST value; check it before real deployment.
 
 ## Roles (staff levels)
+
 Staff accounts are in `users` with a `level`: `admin` < `super_admin` (no level =
 old account = super_admin). The login session role is `admin` for both, plus
-`level`. Staff sessions last 12 h, not 7 days. There is no marshal role: the
+`level`. Staff sessions last 12 h, not 7 days. There is no marshal role (removed): the
 terminal is run by the kiosk, the drivers' NFC cards and the admins.
+
 - Use `await requireStaff(db, req, res, ["admin", ...])` from `api/_authz.js` for
   staff endpoints: it also re-checks the account in the database, so a disabled
   or demoted account loses access at once.
@@ -56,7 +61,15 @@ terminal is run by the kiosk, the drivers' NFC cards and the admins.
 - Staff accounts API is `api/admin.js` `action=accounts|account-create|account-update|account-reset`.
 - The kiosk staff card + PIN (`x-staff-token`) is separate (kiosk staff panel).
 
+## Incidents
+
+`api/reports.js`: status `open -> acknowledged -> resolved` (+ `reopen`). Actions `ack|assign|note|resolve|reopen`; every step is appended to
+`timeline`. Resolve takes an `outcome` (resolved / false_alarm / referred /
+no_action). An SOS unanswered for 3 min is `overdue`. Reports without a
+`timeline` (older ones) get one built by `timelineOf`.
+
 ## Kiosk "I don't want to use the system" (opt-out)
+
 Button on the kiosk home screen -> `POST api/requests.js ?action=optout` gives a
 2-minute single-use ticket (`optouts` collection). The driver the passenger
 boards with may tap their NFC card (`?action=optout-tap`) to put the trip on
@@ -67,6 +80,7 @@ income / booked rides (`totals.noSystem` in `api/admin.js`) or the driver's
 card lockout). The kiosk keeps the ticket in a ref (stale NFC listener).
 
 ## Push notifications (free Web Push)
+
 `api/_push.js` (shared code) sends them; subscriptions are saved through
 `api/auth.js` actions `push-key` / `push-subscribe` / `push-unsubscribe`
 (function limit: no new file). The browser side is `public/sw.js`, `src/push.js`
@@ -77,11 +91,13 @@ Tests set `PUSH_TEST=1`, which logs messages to `global._gravitryPushLog`
 instead of sending. iPhones only get push for apps added to the Home Screen.
 
 ## Tests
+
 `tests/helpers.mjs` has the fake database and `call()` helper. Import it first
 in a test file. Add a test for every new endpoint or rule. Each file runs in
 its own process, so state never leaks between files.
 
 ## How the user likes to work
+
 - Give the fix first, explain briefly after. Taglish is fine.
 - Give PowerShell commands, never bash-only ones.
 - One feature per branch / pull request when working in git.

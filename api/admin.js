@@ -155,6 +155,14 @@ export async function buildAnalytics(db, from, to) {
   const responses = reports
     .filter((r) => r.acknowledgedAt)
     .map((r) => minutes(r.ts, r.acknowledgedAt));
+  const resolveTimes = reports
+    .filter((r) => r.resolvedAt)
+    .map((r) => minutes(r.ts, r.resolvedAt));
+  const byOutcome = {};
+  for (const r of reports)
+    if (r.status === "resolved")
+      byOutcome[r.outcome || "resolved"] =
+        (byOutcome[r.outcome || "resolved"] || 0) + 1;
   const attendance = await db
     .collection("attendance")
     .find({ date: { $gte: from, $lte: to } })
@@ -203,6 +211,8 @@ export async function buildAnalytics(db, from, to) {
       incidents: reports.filter((r) => r.kind === "incident").length,
       resolved: reports.filter((r) => r.status === "resolved").length,
       averageResponseMinutes: avg(responses),
+      averageResolveMinutes: avg(resolveTimes),
+      byOutcome,
     },
     attendance: {
       attendanceRecords: attendance.length,
