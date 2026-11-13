@@ -111,7 +111,12 @@ export async function reverseGeocode(lat, lng) {
 export const pickupLabel = (r) =>
   r?.pickup?.label || getTerm(r?.origin)?.name || r?.origin || "";
 export const dropoffLabel = (r) =>
-  r?.dropoff?.label || getTerm(r?.destination)?.name || r?.destination || "";
+  r?.optOut
+    ? "No destination recorded"
+    : r?.dropoff?.label ||
+      getTerm(r?.destination)?.name ||
+      r?.destination ||
+      "";
 
 // The exact map point of a ride's pickup / drop-off ({ lat, lng, ... }). New
 // rides carry the exact point the passenger picked; older ones only have a
