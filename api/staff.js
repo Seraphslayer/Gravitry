@@ -7,7 +7,7 @@ import {
   hashPassword,
   comparePassword,
 } from "./_auth.js";
-import { requireSession, isNonEmptyString } from "./_authz.js";
+import { requireStaff, isNonEmptyString } from "./_authz.js";
 import {
   expiredDocsOf,
   recordAttendance,
@@ -38,15 +38,14 @@ const PIN_RE = /^[0-9]{4,8}$/;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MIN = 15;
 
-// Who is calling? A kiosk staff token (card + PIN) or a logged-in admin.
-function getActor(req, res) {
+// Who is calling? A kiosk staff token (card + PIN) or a logged-in
+// admin (checked against the database, so a disabled account is refused).
+async function getActor(db, req, res) {
   const staff = getStaffFromReq(req);
   if (staff) return { by: `staff:${staff.name}`, name: staff.name };
-  const session = getSessionFromReq(req);
-  if (session?.role === "admin")
-    return { by: session.sub || "admin", name: "Admin" };
-  res.status(401).json({ error: "Staff sign-in required" });
-  return null;
+  const session = await requireStaff(db, req, res, ["admin"]);
+  if (!session) return null;
+  return { by: session.sub || "admin", name: session.name || "Staff" };
 }
 
 export default async function handler(req, res) {
@@ -95,7 +94,7 @@ export default async function handler(req, res) {
 
     // ---- staff panel actions ----------------------------------------------
     if (req.method === "GET" && action === "drivers") {
-      const actor = getActor(req, res);
+      const actor = await getActor(db, req, res);
       if (!actor) return;
       const terminal = isNonEmptyString(req.query.terminal)
         ? req.query.terminal
@@ -123,7 +122,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST" && action === "assign") {
-      const actor = getActor(req, res);
+      const actor = await getActor(db, req, res);
       if (!actor) return;
       if (!isNonEmptyString(body.requestId) || !isNonEmptyString(body.driverId))
         return res.status(400).json({ error: "Choose a ride and a driver" });
@@ -137,7 +136,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST" && action === "cancel") {
-      const actor = getActor(req, res);
+      const actor = await getActor(db, req, res);
       if (!actor) return;
       if (!isNonEmptyString(body.requestId))
         return res.status(400).json({ error: "Choose a ride" });
@@ -146,7 +145,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST" && action === "checkin") {
-      const actor = getActor(req, res);
+      const actor = await getActor(db, req, res);
       if (!actor) return;
       if (!isNonEmptyString(body.driverId))
         return res.status(400).json({ error: "Choose a driver" });
@@ -174,7 +173,7 @@ export default async function handler(req, res) {
 
     // Staff take a driver out of the terminal line (left without taking a ride).
     if (req.method === "POST" && action === "line-remove") {
-      const actor = getActor(req, res);
+      const actor = await getActor(db, req, res);
       if (!actor) return;
       if (!isNonEmptyString(body.driverId))
         return res.status(400).json({ error: "Choose a driver" });
@@ -184,7 +183,7 @@ export default async function handler(req, res) {
 
     // ---- admin only --------------------------------------------------------
     if (req.method === "GET" && action === "attendance") {
-      if (!requireSession(req, res, ["admin"])) return;
+      if (!(await requireStaff(db, req, res, ["admin"]))) return;
       const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "")
         ? req.query.date
         : phDate();
@@ -194,7 +193,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "GET" && action === "cards") {
-      if (!requireSession(req, res, ["admin"])) return;
+      if (!(await requireStaff(db, req, res, ["admin"]))) return;
       const cards = await db.collection("staff_cards").find({}).toArray();
       return res.status(200).json(
         cards.map((c) => ({
@@ -209,7 +208,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST" && action === "card-create") {
-      if (!requireSession(req, res, ["admin"])) return;
+      if (!(await requireStaff(db, req, res, ["admin"]))) return;
       const name =
         typeof body.name === "string" ? body.name.trim().slice(0, 60) : "";
       const nfcId = String(body.nfcId || "").trim();
@@ -239,7 +238,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST" && action === "card-update" && id) {
-      if (!requireSession(req, res, ["admin"])) return;
+      if (!(await requireStaff(db, req, res, ["admin"]))) return;
       const set = {};
       if (body.pin !== undefined) {
         if (!PIN_RE.test(String(body.pin)))
@@ -263,7 +262,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "POST" && action === "card-delete" && id) {
-      if (!requireSession(req, res, ["admin"])) return;
+      if (!(await requireStaff(db, req, res, ["admin"]))) return;
       await db.collection("staff_cards").deleteOne({ _id: id });
       return res.status(200).json({ ok: true });
     }

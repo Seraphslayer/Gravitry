@@ -1,5 +1,5 @@
 import { getDb } from "./_db.js";
-import { requireSession, isNonEmptyString } from "./_authz.js";
+import { requireSession, isNonEmptyString, requireStaff } from "./_authz.js";
 import { getSessionFromReq } from "./_auth.js";
 
 // ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ export default async function handler(req, res) {
 
     if (req.method === "POST") {
       // Every change here is admin-only.
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const body = req.body || {};
 

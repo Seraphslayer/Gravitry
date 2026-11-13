@@ -146,7 +146,7 @@ export async function call(
       return this;
     },
     json(j) {
-      out = { status: this.c ?? 200, body: j };
+      out = { status: this.c ?? 200, body: j, headers: this.h };
     },
     send(b) {
       out = { status: this.c ?? 200, body: b, headers: this.h };

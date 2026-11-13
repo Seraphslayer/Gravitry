@@ -1,5 +1,12 @@
 import { getDb } from "./_db.js";
-import { requireSession } from "./_authz.js";
+import { randomBytes } from "node:crypto";
+import {
+  requireStaff,
+  requireSuperAdmin,
+  levelOf,
+  STAFF_LEVELS,
+} from "./_authz.js";
+import { hashPassword, generatePassword } from "./_auth.js";
 import { phDate, driverAppActive } from "./_dispatch.js";
 
 // Admin-only tools.
@@ -13,6 +20,15 @@ import { phDate, driverAppActive } from "./_dispatch.js";
 //       Health of the system for the Status tab (kiosk, database, drivers...).
 //   GET /api/admin?action=collections
 //       The collections that can be exported, with how many records each has.
+//
+//
+// Staff accounts (super admin only):
+//   GET  /api/admin?action=accounts                       every staff account
+//   POST /api/admin?action=account-create   { username, name, level }
+//   POST /api/admin?action=account-update&id=  { level?, active?, name? }
+//   POST /api/admin?action=account-reset&id=              new password (shown once)
+// level: admin | super_admin. Accounts are disabled, never deleted,
+// so the log of who did what keeps making sense.
 //
 // A full backup = export every collection as JSON (the Data tab does this).
 // (MongoDB Atlas also keeps its own backups; this is the copy you can hold.)
@@ -280,14 +296,191 @@ export async function buildStatus(db) {
   };
 }
 
+async function usernameTaken(db, username) {
+  for (const name of ["users", "drivers", "passengers"]) {
+    if (await db.collection(name).findOne({ username })) return true;
+  }
+  return false;
+}
+
+const publicAccount = (u) => ({
+  id: u._id,
+  username: u.username,
+  name: u.name || u.username,
+  level: levelOf(u),
+  active: u.active !== false,
+  createdAt: u.createdAt || null,
+  lastLoginAt: u.lastLoginAt || null,
+});
+
+// Staff accounts. Returns true when it handled the request.
+async function handleAccounts(db, req, res, action) {
+  const session = await requireSuperAdmin(db, req, res);
+  if (!session) return true;
+  const users = db.collection("users");
+  const { id } = req.query;
+  const body = req.body || {};
+
+  if (req.method === "GET" && action === "accounts") {
+    const docs = await users.find({}).toArray();
+    docs.sort((a, b) => (a.username < b.username ? -1 : 1));
+    res.status(200).json(docs.map(publicAccount));
+    return true;
+  }
+
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return true;
+  }
+
+  if (action === "account-create") {
+    const username =
+      typeof body.username === "string" ? body.username.trim() : "";
+    const name =
+      typeof body.name === "string" ? body.name.trim().slice(0, 60) : "";
+    if (!/^[A-Za-z0-9._-]{3,40}$/.test(username)) {
+      res.status(400).json({
+        error: "Username: 3-40 letters, numbers, dot, dash or underscore",
+      });
+      return true;
+    }
+    if (name.length < 2) {
+      res.status(400).json({ error: "Enter the person's name" });
+      return true;
+    }
+    if (!STAFF_LEVELS.includes(body.level)) {
+      res.status(400).json({ error: "Choose admin or super admin" });
+      return true;
+    }
+    if (await usernameTaken(db, username)) {
+      res.status(409).json({ error: "That username is already taken" });
+      return true;
+    }
+    const password = generatePassword();
+    const doc = {
+      _id: `U-${randomBytes(4).toString("hex")}`,
+      username,
+      name,
+      level: body.level,
+      active: true,
+      passwordHash: hashPassword(password),
+      createdAt: new Date().toISOString(),
+      createdBy: session.sub,
+    };
+    await users.insertOne(doc);
+    res.status(201).json({ ...publicAccount(doc), password });
+    return true;
+  }
+
+  if (action === "account-update" || action === "account-reset") {
+    if (!id) {
+      res.status(400).json({ error: "Choose an account" });
+      return true;
+    }
+    const target = await users.findOne({ _id: id });
+    if (!target) {
+      res.status(404).json({ error: "Account not found" });
+      return true;
+    }
+
+    if (action === "account-reset") {
+      const password = generatePassword();
+      await users.updateOne(
+        { _id: id },
+        {
+          $set: {
+            passwordHash: hashPassword(password),
+            passwordResetAt: new Date().toISOString(),
+            passwordResetBy: session.sub,
+          },
+        },
+      );
+      await db
+        .collection("login_attempts")
+        .deleteOne({ _id: `login:${target.username.toLowerCase()}` });
+      res.status(200).json({ id, username: target.username, password });
+      return true;
+    }
+
+    const set = {};
+    if (body.level !== undefined) {
+      if (!STAFF_LEVELS.includes(body.level)) {
+        res.status(400).json({ error: "Choose admin or super admin" });
+        return true;
+      }
+      set.level = body.level;
+    }
+    if (body.active !== undefined) {
+      if (typeof body.active !== "boolean") {
+        res.status(400).json({ error: "active must be true or false" });
+        return true;
+      }
+      set.active = body.active;
+    }
+    if (body.name !== undefined) {
+      const name =
+        typeof body.name === "string" ? body.name.trim().slice(0, 60) : "";
+      if (name.length < 2) {
+        res.status(400).json({ error: "Enter the person's name" });
+        return true;
+      }
+      set.name = name;
+    }
+    if (!Object.keys(set).length) {
+      res.status(400).json({ error: "Nothing to change" });
+      return true;
+    }
+    // You cannot lock yourself out or demote yourself by accident.
+    if (
+      id === session.sub &&
+      (set.level !== undefined || set.active !== undefined)
+    ) {
+      res.status(409).json({
+        error:
+          "You can't change your own level or disable yourself. Ask another super admin.",
+      });
+      return true;
+    }
+    // There must always be at least one active super admin.
+    const losesSuper =
+      levelOf(target) === "super_admin" &&
+      target.active !== false &&
+      ((set.level !== undefined && set.level !== "super_admin") ||
+        set.active === false);
+    if (losesSuper) {
+      const others = (await users.find({}).toArray()).filter(
+        (u) =>
+          u._id !== id && u.active !== false && levelOf(u) === "super_admin",
+      );
+      if (!others.length) {
+        res
+          .status(409)
+          .json({ error: "There must be at least one active super admin" });
+        return true;
+      }
+    }
+    await users.updateOne({ _id: id }, { $set: set });
+    res.status(200).json(publicAccount({ ...target, ...set }));
+    return true;
+  }
+
+  res.status(400).json({ error: "Unknown action" });
+  return true;
+}
+
 export default async function handler(req, res) {
   try {
     const { action } = req.query;
+    const db = await getDb();
+
+    if (typeof action === "string" && action.startsWith("account")) {
+      if (await handleAccounts(db, req, res, action)) return;
+    }
+
     if (req.method !== "GET")
       return res.status(405).json({ error: "Method not allowed" });
-    const session = requireSession(req, res, ["admin"]);
+    const session = await requireStaff(db, req, res, ["admin"]);
     if (!session) return;
-    const db = await getDb();
 
     if (action === "analytics") {
       const today = phDate();
@@ -305,6 +498,10 @@ export default async function handler(req, res) {
     }
 
     if (action === "status") return res.status(200).json(await buildStatus(db));
+
+    if (action === "collections" || action === "export") {
+      if (!(await requireSuperAdmin(db, req, res))) return;
+    }
 
     if (action === "collections") {
       const out = [];

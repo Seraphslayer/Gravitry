@@ -186,6 +186,8 @@ const admins = [
     _id: "U1",
     username: "admin",
     name: "TODA Admin",
+    level: "super_admin",
+    active: true,
     passwordHash: hash(DEMO_ADMIN_PASSWORD),
   },
 ];

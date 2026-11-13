@@ -1,5 +1,5 @@
 import { getDb } from "./_db.js";
-import { requireSession } from "./_authz.js";
+import { requireSession, requireStaff } from "./_authz.js";
 import {
   getTariff,
   cleanTariff,
@@ -34,7 +34,7 @@ export default async function handler(req, res) {
     if (req.method === "GET") return res.status(200).json(await view(db));
 
     if (req.method === "PATCH") {
-      const session = requireSession(req, res, ["admin"]);
+      const session = await requireStaff(db, req, res, ["admin"]);
       if (!session) return;
       const { tariff, error } = cleanTariff(req.body);
       if (error) return res.status(400).json({ error });
